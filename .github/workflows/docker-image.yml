@@ -17,6 +17,10 @@ jobs:
       run: docker login -u ${{ secrets.DOCKER_USER }} -p  ${{ secrets.DOCKER_PASSWORD }}
     - uses: actions/checkout@v4
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag zlzforever/nuget-cache:20260324.1
+      run: |
+          docker build . --file Dockerfile --tag zlzforever/nuget-cache:20260324.1 
+          docker build . --file Dockerfile --tag zlzforever/nuget-cache 
     - name: Publish the Docker image
-      run: docker push zlzforever/nuget-cache:20260324.1
+      run: |
+          docker push zlzforever/nuget-cache:20260324.1
+          docker push zlzforever/nuget-cache
