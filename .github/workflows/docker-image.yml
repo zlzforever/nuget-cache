@@ -18,9 +18,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build the Docker image
       run: |
-          docker build . --file Dockerfile --tag zlzforever/nuget-cache:202600416.1 
+          docker build . --file Dockerfile --tag zlzforever/nuget-cache:202600416.2
           docker build . --file Dockerfile --tag zlzforever/nuget-cache 
     - name: Publish the Docker image
       run: |
-          docker push zlzforever/nuget-cache:202600416.1
+          docker push zlzforever/nuget-cache:202600416.2
           docker push zlzforever/nuget-cache

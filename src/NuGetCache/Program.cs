@@ -36,9 +36,6 @@ if (!Uri.TryCreate(Environment.GetEnvironmentVariable("PROXY_DOMAIN"), UriKind.A
     throw new ArgumentException("Invalid proxy URI");
 }
 
-var cachePath = Environment.GetEnvironmentVariable("CACHE_PATH") ??
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nuget-cache");
-
 builder.Services.AddHttpClient("NuGet")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -55,7 +52,16 @@ builder.Services.AddMemoryCache();
 var app = builder.Build();
 var logger = app.Logger;
 
-Directory.CreateDirectory(cachePath);
+var cachePath = Environment.GetEnvironmentVariable("CACHE_PATH");
+cachePath = string.IsNullOrWhiteSpace(cachePath)
+    ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nuget-cache")
+    : cachePath;
+if (!Directory.Exists(cachePath))
+{
+    Directory.CreateDirectory(cachePath);
+}
+
+logger.LogInformation("Cache root path: {Path}", cachePath);
 
 app.MapGet("/v3/index.json", async (IMemoryCache cache, IHttpClientFactory http) =>
 {
@@ -129,12 +135,13 @@ app.MapGet("/v3-flatcontainer/{id}/{version}/{file}",
 
         if (File.Exists(cacheFile))
         {
-            logger.LogInformation("Package cache hit: {Id}/{Version}/{File}",
-                id, version, file);
+            logger.LogInformation("Package cache hit: {File}",
+                cacheFile);
 
             var contentType = file.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)
                 ? "application/octet-stream"
                 : "application/json";
+
             return Results.File(cacheFile, contentType);
         }
 

@@ -34,17 +34,17 @@
 
 ## 环境变量
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `PROXY_DOMAIN` | (必填) | 代理服务的外部访问域名，如 `https://nuget.example.com/` |
-| `CACHE_PATH` | `nuget-cache` | 磁盘缓存目录 |
+| 变量             | 默认值           | 说明                                         |
+|----------------|---------------|--------------------------------------------|
+| `PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/` |
+| `CACHE_PATH`   | `nuget-cache` | 磁盘缓存目录                                     |
 
 ## 构建与运行
 
 ### Docker 构建
 
 ```bash
-docker build -t zlzforever/nuget-cache:latest .
+docker build -t gitea.ptkj.cc/public/zlzforever/nuget-cache:202600416.1 .
 ```
 
 ### Docker 运行
@@ -75,6 +75,12 @@ services:
       - PROXY_DOMAIN=https://nuget-cdn.example.com
 ```
 
+### 测试
+
+```
+http://localhost:5212/v3-flatcontainer/junittestlogger/1.1.0/junittestlogger.1.1.0.nupkg
+```
+
 ## 配置 NuGet 客户端
 
 ### 添加包源
@@ -89,10 +95,10 @@ dotnet nuget add source https://nuget-cdn.example.com/v3/index.json \
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
-  <packageSources>
-    <clear />
-    <add key="nuget-cache" value="https://nuget-cdn.example.com/v3/index.json" />
-  </packageSources>
+    <packageSources>
+        <clear/>
+        <add key="nuget-cache" value="https://nuget-cdn.example.com/v3/index.json"/>
+    </packageSources>
 </configuration>
 ```
 
@@ -113,22 +119,22 @@ nuget-cache/
 
 ### Kestrel 服务器
 
-| 配置 | 值 | 说明 |
-|------|-----|------|
-| `MaxConcurrentConnections` | 2000 | 最大并发 TCP 连接 |
-| `MaxConcurrentUpgradedConnections` | 500 | 最大升级连接 (WebSocket) |
-| `KeepAliveTimeout` | 2 分钟 | 长连接保活超时 |
-| `RequestHeadersTimeout` | 30 秒 | 请求头超时 |
+| 配置                                 | 值    | 说明                 |
+|------------------------------------|------|--------------------|
+| `MaxConcurrentConnections`         | 2000 | 最大并发 TCP 连接        |
+| `MaxConcurrentUpgradedConnections` | 500  | 最大升级连接 (WebSocket) |
+| `KeepAliveTimeout`                 | 2 分钟 | 长连接保活超时            |
+| `RequestHeadersTimeout`            | 30 秒 | 请求头超时              |
 
 ### HttpClient 连接池
 
-| 配置 | 值 | 说明 |
-|------|-----|------|
-| `Timeout` | 110 秒 | 请求总超时 |
-| `ConnectTimeout` | 30 秒 | 连接建立超时 |
-| `MaxConnectionsPerServer` | 100 | 每服务器最大连接数 |
-| `PooledConnectionLifetime` | 5 分钟 | 连接池存活时间 |
-| `PooledConnectionIdleTimeout` | 1 分钟 | 空闲连接超时 |
+| 配置                            | 值     | 说明        |
+|-------------------------------|-------|-----------|
+| `Timeout`                     | 110 秒 | 请求总超时     |
+| `ConnectTimeout`              | 30 秒  | 连接建立超时    |
+| `MaxConnectionsPerServer`     | 100   | 每服务器最大连接数 |
+| `PooledConnectionLifetime`    | 5 分钟  | 连接池存活时间   |
+| `PooledConnectionIdleTimeout` | 1 分钟  | 空闲连接超时    |
 
 ## 日志示例
 
