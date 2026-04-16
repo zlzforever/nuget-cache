@@ -165,7 +165,7 @@ app.MapGet("/v3-flatcontainer/{id}/{version}/{file}",
         var contentType2 = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
         return Results.Bytes(content, contentType2);
     });
-
+app.MapGet("/", () => Results.Text("I am ok: " + DateTimeOffset.UtcNow));
 app.MapFallback((HttpContext ctx) =>
 {
     logger.LogInformation("[Fallback] {Method} {Path} -> 404", ctx.Request.Method, ctx.Request.Path);
