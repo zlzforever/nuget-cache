@@ -10,8 +10,10 @@ builder.Logging.AddSimpleConsole();
 // 配置 Kestrel 并发连接与超时
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
+    // 100M
+    serverOptions.Limits.MaxRequestBodySize = 1024288000;
     // 最大并发 TCP 连接（null 表示无限制，生产建议设 5000-50000，依内存而定）
-    serverOptions.Limits.MaxConcurrentConnections = 2000;
+    serverOptions.Limits.MaxConcurrentConnections = 5000;
     // WebSocket 等升级连接的单独限制（默认 100）
     serverOptions.Limits.MaxConcurrentUpgradedConnections = 500;
     // 长连接保活超时（默认 2 分钟，可按需调整）
@@ -38,12 +40,12 @@ var cachePath = Environment.GetEnvironmentVariable("CACHE_PATH") ??
                 Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nuget-cache");
 
 builder.Services.AddHttpClient("NuGet")
-    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(110))
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
-        MaxConnectionsPerServer = 100,
+        MaxConnectionsPerServer = 1000,
         ConnectTimeout = TimeSpan.FromSeconds(30),
         EnableMultipleHttp2Connections = true
     });
@@ -127,14 +129,13 @@ app.MapGet("/v3-flatcontainer/{id}/{version}/{file}",
 
         if (File.Exists(cacheFile))
         {
-            var fileInfo = new FileInfo(cacheFile);
-            logger.LogInformation("Package cache hit: {Id}/{Version}/{File}, Size: {Size} bytes",
-                id, version, file, fileInfo.Length);
+            logger.LogInformation("Package cache hit: {Id}/{Version}/{File}",
+                id, version, file);
 
             var contentType = file.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)
                 ? "application/octet-stream"
                 : "application/json";
-            return Results.Stream(fileInfo.OpenRead(), contentType);
+            return Results.File(cacheFile, contentType);
         }
 
         var targetUrl = $"https://api.nuget.org/v3-flatcontainer/{idLower}/{versionLower}/{fileLower}";
