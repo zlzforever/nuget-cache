@@ -1,0 +1,26 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Login docker regsitry
+      run: docker login -u ${{ secrets.DOCKER_USER }} -p  ${{ secrets.DOCKER_PASSWORD }}
+    - uses: actions/checkout@v4
+    - name: Build the Docker image
+      run: |
+          docker build . --file Dockerfile --tag zlzforever/nuget-cache:202600416.1 
+          docker build . --file Dockerfile --tag zlzforever/nuget-cache 
+    - name: Publish the Docker image
+      run: |
+          docker push zlzforever/nuget-cache:202600416.1
+          docker push zlzforever/nuget-cache
