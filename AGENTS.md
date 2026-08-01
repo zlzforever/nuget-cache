@@ -8,7 +8,7 @@ A high-performance NuGet package caching proxy service built with:
 - **Framework**: .NET 10.0 ASP.NET Core
 - **API Style**: Minimal APIs (not MVC/controllers)
 - **Compilation**: AOT (Ahead-of-Time) native compilation enabled
-- **Architecture**: Single-file application (Program.cs ~174 lines)
+- **Architecture**: Composition root (`Program.cs`) + layered `Configuration/` `Services/` `Handlers/`
 
 ---
 
@@ -21,8 +21,8 @@ dotnet build -c Release           # Build (Release)
 dotnet publish -c Release         # Publish AOT native binary
 docker build -t nuget-cache:latest .  # Docker build
 
-# Run locally (requires PROXY_DOMAIN env var)
-PROXY_DOMAIN=https://your-domain.com/ dotnet run --project src/NuGetCache/NuGetCache.csproj
+# Run locally (requires NUGET_PROXY_DOMAIN env var; PROXY_DOMAIN still works as deprecated fallback)
+NUGET_PROXY_DOMAIN=https://your-domain.com/ dotnet run --project src/NuGetCache/NuGetCache.csproj
 ```
 
 ## Test Commands
@@ -133,8 +133,9 @@ using var response = await httpClient.GetAsync(url);
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `PROXY_DOMAIN` | Yes | External URL (e.g., `https://nuget.example.com/`) |
-| `CACHE_PATH` | No | Disk cache directory (default: `nuget-cache`) |
+| `NUGET_PROXY_DOMAIN` | Yes | External URL (e.g., `https://nuget.example.com/`). Deprecated fallback: `PROXY_DOMAIN` (with warning log) |
+| `CACHE_PATH` | No | Disk cache root directory shared by NuGet/Maven (default: `nuget-cache`) |
+| `MAVEN_UPSTREAM_URL` | No | Maven upstream base URL (default: Maven Central) |
 
 ### Caching Strategy
 

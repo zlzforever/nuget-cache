@@ -40,8 +40,8 @@
 
 | 变量             | 默认值           | 说明                                         |
 |----------------|---------------|--------------------------------------------|
-| `PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/` |
-| `CACHE_PATH`   | `nuget-cache` | 磁盘缓存目录                                     |
+| `NUGET_PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/`。旧名 `PROXY_DOMAIN` 仍支持（已弃用，命中时输出警告日志） |
+| `CACHE_PATH`   | `nuget-cache` | NuGet/Maven 共用的磁盘缓存根目录（Maven 落在 `{CACHE_PATH}/maven/`） |
 | `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址（可切换国内镜像，如 `https://maven.aliyun.com/repository/central`） |
 
 ## 构建与运行
@@ -60,7 +60,7 @@ docker run -d \
   --restart always \
   -p 18680:8080 \
   -v /data/nuget-cache:/app/nuget-cache \
-  -e PROXY_DOMAIN=https://nuget-cdn.example.com \
+  -e NUGET_PROXY_DOMAIN=https://nuget-cdn.example.com \
   zlzforever/nuget-cache:latest
 ```
 
@@ -77,7 +77,7 @@ services:
     volumes:
       - /data/nuget-cache:/app/nuget-cache
     environment:
-      - PROXY_DOMAIN=https://nuget-cdn.example.com
+      - NUGET_PROXY_DOMAIN=https://nuget-cdn.example.com
 ```
 
 ### 测试
