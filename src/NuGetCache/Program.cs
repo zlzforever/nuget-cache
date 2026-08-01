@@ -1,6 +1,8 @@
-using System.ComponentModel.DataAnnotations;
-using System.Text.RegularExpressions;
-using Microsoft.Extensions.Caching.Memory;
+using NuGetCache.Configuration;
+using NuGetCache.Handlers;
+using NuGetCache.Services;
+
+// 组合根：集中完成 Kestrel 配置、DI 注册与路由注册，业务逻辑分布在 Handlers / Services / Configuration 中
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,158 +26,59 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     serverOptions.AllowSynchronousIO = false;
 });
 
-// builder.Logging.AddSimpleConsole(options =>
-// {
-//     options.TimestampFormat = "[yyyy-MM-dd HH:mm:ss] ";
-//     options.IncludeScopes = false;
-//     options.SingleLine = true;
-// });
-
-if (!Uri.TryCreate(Environment.GetEnvironmentVariable("PROXY_DOMAIN"), UriKind.Absolute, out var proxyDomain))
+// 统一的 SocketsHttpHandler 连接池配置，NuGet 与 Maven 复用同一套参数
+static SocketsHttpHandler CreateSocketsHttpHandler() => new()
 {
-    throw new ArgumentException("Invalid proxy URI");
-}
+    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+    MaxConnectionsPerServer = 1000,
+    ConnectTimeout = TimeSpan.FromSeconds(30),
+    EnableMultipleHttp2Connections = true
+};
+
+builder.Services.AddSingleton(sp =>
+    ProxyOptions.Load(sp.GetRequiredService<ILogger<ProxyOptions>>()));
+
+builder.Services.AddSingleton<DiskCacheService>();
+builder.Services.AddSingleton<NuGetProxyHandler>();
+builder.Services.AddSingleton<MavenProxyHandler>();
 
 builder.Services.AddHttpClient("NuGet")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
-    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-    {
-        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
-        MaxConnectionsPerServer = 1000,
-        ConnectTimeout = TimeSpan.FromSeconds(30),
-        EnableMultipleHttp2Connections = true
-    });
+    .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
+
+// Maven 专用 HttpClient，复用相同的连接池配置
+builder.Services.AddHttpClient("Maven")
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
+    .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
 
 builder.Services.AddMemoryCache();
 
 var app = builder.Build();
-var logger = app.Logger;
 
-var cachePath = Environment.GetEnvironmentVariable("CACHE_PATH");
-cachePath = string.IsNullOrWhiteSpace(cachePath)
-    ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "nuget-cache")
-    : cachePath;
-if (!Directory.Exists(cachePath))
+// 启动即校验配置（fail-fast），并解析 handler 供路由注册
+var proxyOptions = app.Services.GetRequiredService<ProxyOptions>();
+var nuGetHandler = app.Services.GetRequiredService<NuGetProxyHandler>();
+var mavenHandler = app.Services.GetRequiredService<MavenProxyHandler>();
+
+if (!Directory.Exists(proxyOptions.CachePath))
 {
-    Directory.CreateDirectory(cachePath);
+    Directory.CreateDirectory(proxyOptions.CachePath);
 }
+app.Logger.LogInformation("Cache root path: {Path}", proxyOptions.CachePath);
 
-logger.LogInformation("Cache root path: {Path}", cachePath);
+// NuGet 路由：服务索引、包版本索引、包文件下载
+app.MapGet("/v3/index.json", nuGetHandler.GetServiceIndex);
+app.MapGet("/v3-flatcontainer/{id}/index.json", nuGetHandler.GetPackageIndex);
+app.MapGet("/v3-flatcontainer/{id}/{version}/{file}", nuGetHandler.GetPackageFile);
 
-app.MapGet("/v3/index.json", async (IMemoryCache cache, IHttpClientFactory http) =>
-{
-    logger.LogInformation("GET /v3/index.json");
+// Maven 通配路由：{**path} 与原请求路径 1:1 透传上游，产物磁盘永久缓存，元数据内存缓存
+app.MapGet("/maven/{**path}", mavenHandler.HandleMavenRoute);
 
-    var cacheKey = "nuget:index.json";
-
-    if (cache.TryGetValue(cacheKey, out string? cachedJson) && cachedJson != null)
-    {
-        return Results.Content(cachedJson, "application/json");
-    }
-
-    var httpClient = http.CreateClient("NuGet");
-    using var response = await httpClient.GetAsync("https://api.nuget.org/v3/index.json");
-
-    if (!response.IsSuccessStatusCode)
-    {
-        logger.LogError("Failed: {StatusCode}", (int)response.StatusCode);
-        return Results.StatusCode((int)response.StatusCode);
-    }
-
-    var json = await response.Content.ReadAsStringAsync();
-
-    var proxyUrl = $"{proxyDomain}v3-flatcontainer/";
-    json = Regex.Replace(json, @"https?://[^/]+/v3-flatcontainer/", proxyUrl, RegexOptions.IgnoreCase);
-
-    cache.Set(cacheKey, json, TimeSpan.FromMinutes(60));
-    return Results.Content(json, "application/json");
-});
-
-app.MapGet("/v3-flatcontainer/{id}/index.json",
-    async ([StringLength(255)] string id, IMemoryCache cache, IHttpClientFactory http) =>
-    {
-        var idLower = id.ToLowerInvariant();
-
-        var cacheKey = $"nuget-package:{idLower}:index.json";
-
-        if (cache.TryGetValue(cacheKey, out string? cachedJson) && cachedJson != null)
-        {
-            logger.LogInformation("Index cache hit: {Id}", idLower);
-            return Results.Content(cachedJson, "application/json");
-        }
-
-        var targetUrl = $"https://api.nuget.org/v3-flatcontainer/{idLower}/index.json";
-
-        var httpClient = http.CreateClient("NuGet");
-        using var response = await httpClient.GetAsync(targetUrl);
-        if (!response.IsSuccessStatusCode)
-        {
-            logger.LogWarning("Fetched index failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
-            return Results.StatusCode((int)response.StatusCode);
-        }
-
-        var json = await response.Content.ReadAsStringAsync();
-        logger.LogInformation("Fetched index successfully: {Url}", targetUrl);
-
-        cache.Set(cacheKey, json, TimeSpan.FromMinutes(60));
-        return Results.Content(json, "application/json");
-    });
-
-app.MapGet("/v3-flatcontainer/{id}/{version}/{file}",
-    async ([StringLength(255)] string id, [StringLength(255)] string version, [StringLength(255)] string file,
-        IHttpClientFactory http) =>
-    {
-        var idLower = id.ToLowerInvariant();
-        var versionLower = version.ToLowerInvariant();
-        var fileLower = file.ToLowerInvariant();
-
-        var cacheDir = Path.Combine(cachePath, idLower, versionLower);
-        var cacheFile = Path.Combine(cacheDir, fileLower);
-
-        if (File.Exists(cacheFile))
-        {
-            logger.LogInformation("Package cache hit: {File}",
-                cacheFile);
-
-            var contentType = file.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)
-                ? "application/octet-stream"
-                : "application/json";
-
-            return Results.File(cacheFile, contentType);
-        }
-
-        var targetUrl = $"https://api.nuget.org/v3-flatcontainer/{idLower}/{versionLower}/{fileLower}";
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        var httpClient = http.CreateClient("NuGet");
-        using var response = await httpClient.GetAsync(targetUrl);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            logger.LogWarning("Download failed ({Elapsed}ms): {StatusCode} - {Url}", sw.ElapsedMilliseconds,
-                (int)response.StatusCode, targetUrl);
-            return Results.StatusCode((int)response.StatusCode);
-        }
-
-        var content = await response.Content.ReadAsByteArrayAsync();
-        sw.Stop();
-
-        Directory.CreateDirectory(cacheDir);
-        await File.WriteAllBytesAsync(cacheFile, content);
-
-        logger.LogInformation("Download success ({Elapsed}ms): {File}, Size: {Size} bytes", sw.ElapsedMilliseconds,
-            cacheFile,
-            content.Length);
-
-        var contentType2 = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
-        return Results.Bytes(content, contentType2);
-    });
 app.MapGet("/", () => Results.Text("I am ok: " + DateTimeOffset.UtcNow));
 app.MapFallback((HttpContext ctx) =>
 {
-    logger.LogInformation("[Fallback] {Method} {Path} -> 404", ctx.Request.Method, ctx.Request.Path);
+    app.Logger.LogInformation("[Fallback] {Method} {Path} -> 404", ctx.Request.Method, ctx.Request.Path);
     return Results.NotFound();
 });
 
