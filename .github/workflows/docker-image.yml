@@ -2,9 +2,11 @@ name: Docker Image CI
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*.*"
+    inputs:
+      tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'dev'
 
 jobs:
   build:
