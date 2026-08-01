@@ -214,8 +214,10 @@ app.MapGet("/maven/{**path}", async (string path, IMemoryCache cache, IHttpClien
         return Results.BadRequest();
     }
 
-    // maven-metadata.xml 走内存缓存（快照 5 分钟 / 非快照 60 分钟），不写盘
-    if (path.Contains("maven-metadata.xml", StringComparison.Ordinal))
+    // maven-metadata.xml 精确文件名匹配才走内存缓存（快照 5 分钟 / 非快照 60 分钟），不写盘；
+    // 校验和伴生文件（maven-metadata.xml.sha1/.md5/.sha256）含相同子串，但按 PRD 应走磁盘缓存，
+    // 因此使用 Path.GetFileName 精确匹配，避免子串匹配误伤
+    if (Path.GetFileName(path).Equals("maven-metadata.xml", StringComparison.Ordinal))
     {
         return await HandleMavenMetadataAsync(path, cache, http);
     }
@@ -241,7 +243,19 @@ static (bool IsValid, string Reason) ValidateMavenPath(string path)
         return (false, $"总路径长度超过上限 {maxTotalPathLength}");
     }
 
-    var segments = path.Split('/');
+    // URL 编码归一化后再做段校验，防止 %2e%2e / %2F 等编码变体绕过 .. 拒绝逻辑；
+    // 仅用于判定，不改动已通过校验的落盘路径内容（大小写保持不变）
+    string decodedPath;
+    try
+    {
+        decodedPath = Uri.UnescapeDataString(path);
+    }
+    catch (UriFormatException)
+    {
+        return (false, "路径包含非法 URL 编码");
+    }
+
+    var segments = decodedPath.Split('/');
     foreach (var segment in segments)
     {
         if (segment.Length == 0)
@@ -354,7 +368,22 @@ async Task<IResult> HandleMavenArtifactAsync(string path, IHttpClientFactory htt
     {
         Directory.CreateDirectory(cacheDir);
     }
-    await File.WriteAllBytesAsync(cacheFile, content);
+
+    // 磁盘写失败不静默：结构化日志记录 cacheFile 上下文后返回 503，由框架统一处理会丢失落盘上下文
+    try
+    {
+        await File.WriteAllBytesAsync(cacheFile, content);
+    }
+    catch (IOException ex)
+    {
+        logger.LogError(ex, "Maven cache file write failed (IOException): {File}", cacheFile);
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        logger.LogError(ex, "Maven cache file write failed (UnauthorizedAccess): {File}", cacheFile);
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
 
     logger.LogInformation("Maven download success ({Elapsed}ms): {File}, Size: {Size} bytes", sw.ElapsedMilliseconds,
         cacheFile, content.Length);
