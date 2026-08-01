@@ -244,7 +244,10 @@ static (bool IsValid, string Reason) ValidateMavenPath(string path)
     }
 
     // URL 编码归一化后再做段校验，防止 %2e%2e / %2F 等编码变体绕过 .. 拒绝逻辑；
-    // 仅用于判定，不改动已通过校验的落盘路径内容（大小写保持不变）
+    // 仅用于判定，不改动已通过校验的落盘路径内容（大小写保持不变）。
+    // 注意：Uri.UnescapeDataString 对非法编码（如 %G0、孤立 %）不抛异常而是原样透传，
+    // 非法 % 会被上游 Uri 重新编码为 %25 后转发并 404 透传，不构成崩溃或安全问题；
+    // 下方 catch 为防御性保留（实际不会触发），接受该行为由上游 404 兜底
     string decodedPath;
     try
     {
@@ -364,14 +367,16 @@ async Task<IResult> HandleMavenArtifactAsync(string path, IHttpClientFactory htt
     sw.Stop();
 
     var cacheDir = Path.GetDirectoryName(cacheFile);
-    if (!string.IsNullOrEmpty(cacheDir))
-    {
-        Directory.CreateDirectory(cacheDir);
-    }
 
-    // 磁盘写失败不静默：结构化日志记录 cacheFile 上下文后返回 503，由框架统一处理会丢失落盘上下文
+    // 磁盘写失败不静默：目录创建与落盘写入统一捕获 IOException / UnauthorizedAccessException，
+    // 结构化日志记录 cacheFile 上下文后返回 503，由框架统一处理会丢失落盘上下文
     try
     {
+        if (!string.IsNullOrEmpty(cacheDir))
+        {
+            Directory.CreateDirectory(cacheDir);
+        }
+
         await File.WriteAllBytesAsync(cacheFile, content);
     }
     catch (IOException ex)
