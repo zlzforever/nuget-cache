@@ -1,6 +1,6 @@
 # NuGet Cache
 
-高性能 NuGet + Maven 包缓存代理服务，基于 ASP.NET Core Minimal API 和 AOT 编译。
+高性能多仓库包缓存代理（当前 NuGet + Maven，规划 npm/docker/pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
 
 ## 功能特性
 

@@ -9,6 +9,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Speed</OptimizationPreference>
+    <!-- 产品语义版本号（后续发版人工递增）；在 git 仓库内构建时，SDK 自动将提交哈希附加到 InformationalVersion -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
 </Project>
