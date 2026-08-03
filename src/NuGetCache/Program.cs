@@ -6,6 +6,9 @@ using NuGetCache.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 启动即打印版本 banner（组合根最顶部、先于配置 fail-fast），保证配置非法时也能看到 LOGO 与版本便于排障
+Console.WriteLine(AppInfo.Banner());
+
 builder.Logging.ClearProviders();
 builder.Logging.AddSimpleConsole();
 
@@ -66,6 +69,8 @@ if (!Directory.Exists(proxyOptions.CachePath))
     Directory.CreateDirectory(proxyOptions.CachePath);
 }
 app.Logger.LogInformation("Cache root path: {Path}", proxyOptions.CachePath);
+app.Logger.LogInformation("NuGet proxy domain: {Domain}", proxyOptions.NuGetProxyDomain);
+app.Logger.LogInformation("Maven upstream: {Upstream}", proxyOptions.MavenUpstream);
 
 // NuGet 路由：服务索引、包版本索引、包文件下载
 app.MapGet("/v3/index.json", nuGetHandler.GetServiceIndex);
