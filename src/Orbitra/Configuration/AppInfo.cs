@@ -1,6 +1,6 @@
 using System.Reflection;
 
-namespace NuGetCache.Configuration;
+namespace Orbitra.Configuration;
 
 /// <summary>
 /// 应用启动信息：集中承载产品展示名、定位标语、版本号与 ASCII LOGO，
@@ -11,9 +11,9 @@ namespace NuGetCache.Configuration;
 public static class AppInfo
 {
     /// <summary>
-    /// 产品展示名（与仓库名、镜像名、路由前缀保持一致，作为品牌资产暂不更名）。
+    /// 产品展示名（与仓库名、镜像名保持一致，作为品牌资产在本次改造中由 NuGetCache 更名为 Orbitra）。
     /// </summary>
-    public const string Name = "NuGetCache";
+    public const string Name = "Orbitra";
 
     /// <summary>
     /// 产品定位标语（多仓库包缓存代理），用于 banner 定位行展示。
@@ -23,12 +23,12 @@ public static class AppInfo
     /// <summary>
     /// 当前已支持的仓库列表（竖线分隔），用于 banner 定位行展示。
     /// </summary>
-    public const string SupportedRepos = "nuget | maven";
+    public const string SupportedRepos = "nuget | maven | npm";
 
     /// <summary>
     /// 规划支持的仓库列表（竖线分隔），用于 banner 定位行展示。
     /// </summary>
-    public const string PlannedRepos = "npm | docker | pip";
+    public const string PlannedRepos = "docker | pip";
 
     /// <summary>
     /// 产品版本号（含 git commit 短哈希，如 <c>1.0.0+fa2058b</c>；无 git 上下文时退化为纯 <c>1.0.0</c>）。
@@ -38,14 +38,13 @@ public static class AppInfo
 
     /// <summary>
     /// ASCII 艺术 LOGO（raw string 常量，纯 ASCII，避免终端/日志采集器渲染变形），
-    /// 主体为产品名 NuGetCache，用于 banner 首屏展示。
+    /// 主体为产品名 Orbitra，用于 banner 首屏展示。
     /// </summary>
     public const string Logo = """
-          _   __      ______     __  ______           __
-         / | / /_  __/ ____/__  / /_/ ____/___ ______/ /_  ___
-        /  |/ / / / / / __/ _ \/ __/ /   / __ `/ ___/ __ \/ _ \
-       / /|  / /_/ / /_/ /  __/ /_/ /___/ /_/ / /__/ / / /  __/
-      /_/ |_/\__,_/\____/\___/\__/\____/\__,_/\___/_/ /_/\___/
+      ___      _    _ _
+     / _ \ _ _| |__(_) |_ _ _ __ _
+    | (_) | '_| '_ \ |  _| '_/ _` |
+     \___/|_| |_.__/_|\__|_| \__,_|
 
     """;
 

@@ -1,6 +1,6 @@
-using NuGetCache.Configuration;
+using Orbitra.Configuration;
 
-namespace NuGetCache.Services;
+namespace Orbitra.Services;
 
 /// <summary>
 /// 磁盘缓存下载服务：NuGet 与 Maven 共用的「下载 → 流式落盘 → 原子 rename → 本地文件返回」链路。
