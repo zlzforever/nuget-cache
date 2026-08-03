@@ -1,67 +1,70 @@
-# NuGet Cache
+# Orbitra
 
-高性能多仓库包缓存代理（当前 NuGet + Maven，规划 npm/docker/pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
+高性能多仓库包缓存代理（当前 NuGet + Maven + npm，规划 docker/pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
 
 ## 功能特性
 
-- **包下载代理**: 代理 `/v3/index.json` 和 `/v3-flatcontainer/` 请求
-- **磁盘缓存**: `.nupkg` 文件缓存到本地磁盘，永久保存
-- **内存缓存**: `index.json` 缓存 60 分钟
-- **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL 替换为代理域名
+- **NuGet 下载代理**: 代理 `/nuget/v3/index.json` 和 `/nuget/v3-flatcontainer/` 请求
 - **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游）
-- **Maven 磁盘永久缓存**: `.jar` `.pom` `.aar` `.war` `.zip` 及校验和文件永久落盘
-- **Maven 元数据内存缓存**: `maven-metadata.xml` 内存缓存（快照 5 分钟 / 非快照 60 分钟）
-- **高并发**: 支持最大 2000 并发连接
+- **npm 代理**: `/npm/{**path}` 通配路由透传 npm registry（或自配上游），tarball 磁盘永久缓存、包元数据内存短 TTL 缓存
+- **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball 等产物文件缓存到本地磁盘，永久保存
+- **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒
+- **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL 与 npm tarball URL 重写为代理域名
+- **HEAD 支持**: 全部数据路由支持 `HEAD`（Content-Length 与 GET 一致，无响应体）
+- **高并发**: 支持最大 5000 并发连接
 - **详细日志**: 记录缓存命中、下载耗时等信息
 - **AOT 编译**: 使用 .NET 10 AOT 原生编译，启动快、体积小
 
 ## 实现逻辑
 
 ```
-┌─────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│ NuGet/Maven │────▶│   nuget-cache   │────▶│  nuget.org /     │
-│   Client    │     │   (代理服务)     │     │  Maven Central   │
-└─────────────┘     └─────────────────┘     └──────────────────┘
-                            │
-                    ┌───────┴───────┐
-                    ▼               ▼
-              ┌──────────┐   ┌──────────┐
-              │ 内存缓存  │   │ 磁盘缓存  │
-              │(60分钟)   │   │ (永久)    │
-              └──────────┘   └──────────┘
+┌──────────────────┐     ┌─────────────────┐     ┌────────────────────────────┐
+│ NuGet/Maven/npm  │────▶│     Orbitra     │────▶│  nuget.org / Maven Central │
+│     Client       │     │    (代理服务)     │     │      / npm registry       │
+└──────────────────┘     └─────────────────┘     └────────────────────────────┘
+                                │
+                        ┌───────┴───────┐
+                        ▼               ▼
+                  ┌──────────┐   ┌──────────┐
+                  │ 内存缓存  │   │ 磁盘缓存  │
+                  │(短 TTL)   │   │ (永久)    │
+                  └──────────┘   └──────────┘
 ```
 
-1. **`/v3/index.json`** - 从上游获取并替换所有 `v3-flatcontainer` URL，内存缓存 60 分钟
-2. **`/v3-flatcontainer/{id}/index.json`** - 包版本索引，内存缓存 60 分钟
-3. **`/v3-flatcontainer/{id}/{version}/{file}`** - 包文件下载，磁盘永久缓存
+1. **`/nuget/v3/index.json`** - 从上游获取并替换所有 `v3-flatcontainer` URL，内存缓存 60 分钟
+2. **`/nuget/v3-flatcontainer/{id}/index.json`** - 包版本索引，内存缓存 60 分钟
+3. **`/nuget/v3-flatcontainer/{id}/{version}/{file}`** - 包文件下载，磁盘永久缓存
 4. **`/maven/{**path}`** - Maven 上游代理，产物磁盘永久缓存，元数据内存缓存
+5. **`/npm/{**path}`** - npm 上游代理，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存（按 Accept 变体区分）
 
 ## 环境变量
 
 | 变量             | 默认值           | 说明                                         |
 |----------------|---------------|--------------------------------------------|
 | `NUGET_PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/`。旧名 `PROXY_DOMAIN` 仍支持（已弃用，命中时输出警告日志） |
-| `CACHE_PATH`   | `nuget-cache` | NuGet/Maven 共用的磁盘缓存根目录（Maven 落在 `{CACHE_PATH}/maven/`） |
+| `CACHE_PATH`   | `cache` | NuGet/Maven/npm 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`） |
 | `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址（可切换国内镜像，如 `https://maven.aliyun.com/repository/central`） |
+| `NPM_UPSTREAM_URL` | `https://registry.npmjs.org` | npm 上游地址（可切换国内镜像，如 `https://registry.npmmirror.com`） |
+| `NPM_METADATA_TTL` | `60` | npm 包元数据内存缓存 TTL（秒），缩写与全量变体分别缓存 |
 
 ## 构建与运行
 
 ### Docker 构建
 
 ```bash
-docker build -t gitea.ptkj.cc/public/zlzforever/nuget-cache:202600416.1 .
+docker build -t zlzforever/orbitra:latest .
 ```
 
 ### Docker 运行
 
 ```bash
 docker run -d \
-  --name nuget-cache \
+  --name orbitra \
   --restart always \
   -p 18680:8080 \
-  -v /data/nuget-cache:/app/nuget-cache \
+  -v /data/orbitra-cache:/app/cache \
   -e NUGET_PROXY_DOMAIN=https://nuget-cdn.example.com \
-  zlzforever/nuget-cache:latest
+  zlzforever/orbitra:latest
 ```
 
 ### Docker Compose
@@ -69,13 +72,13 @@ docker run -d \
 ```yaml
 version: '3.8'
 services:
-  nuget-cache:
-    image: nuget-cache:latest
+  orbitra:
+    image: zlzforever/orbitra:latest
     restart: always
     ports:
       - "18680:8080"
     volumes:
-      - /data/nuget-cache:/app/nuget-cache
+      - /data/orbitra-cache:/app/cache
     environment:
       - NUGET_PROXY_DOMAIN=https://nuget-cdn.example.com
 ```
@@ -84,13 +87,23 @@ services:
 
 ```
 # NuGet
-http://localhost:5212/v3-flatcontainer/junittestlogger/1.1.0/junittestlogger.1.1.0.nupkg
+http://localhost:5212/nuget/v3-flatcontainer/junittestlogger/1.1.0/junittestlogger.1.1.0.nupkg
 
 # Maven（首次拉取落盘，二次命中磁盘缓存）
 http://localhost:5212/maven/org/springframework/spring-core/6.1.0/spring-core-6.1.0.jar
 
 # Maven 元数据（内存缓存 60 分钟）
 http://localhost:5212/maven/org/springframework/spring-core/maven-metadata.xml
+
+# npm 元数据（tarball URL 自动重写为 {domain}/npm/）
+http://localhost:5212/npm/express
+
+# npm tarball（首次落盘，二次命中磁盘缓存）
+http://localhost:5212/npm/express/-/express-4.19.2.tgz
+
+# HEAD（Content-Length 与 GET 一致，无响应体）
+curl -sI http://localhost:5212/nuget/v3/index.json
+curl -sI http://localhost:5212/npm/express
 ```
 
 ## 配置 NuGet 客户端
@@ -98,8 +111,8 @@ http://localhost:5212/maven/org/springframework/spring-core/maven-metadata.xml
 ### 添加包源
 
 ```bash
-dotnet nuget add source https://nuget-cdn.example.com/v3/index.json \
-  --name nuget-cache
+dotnet nuget add source https://nuget-cdn.example.com/nuget/v3/index.json \
+  --name orbitra
 ```
 
 ### 或修改 `nuget.config`
@@ -109,10 +122,25 @@ dotnet nuget add source https://nuget-cdn.example.com/v3/index.json \
 <configuration>
     <packageSources>
         <clear/>
-        <add key="nuget-cache" value="https://nuget-cdn.example.com/v3/index.json"/>
+        <add key="orbitra" value="https://nuget-cdn.example.com/nuget/v3/index.json"/>
     </packageSources>
 </configuration>
 ```
+
+## 配置 npm 客户端
+
+### `.npmrc`（registry 指向代理）
+
+```ini
+registry=https://nuget-cdn.example.com/npm/
+```
+
+### scope 包说明
+
+`@scope/name` 形式的 scoped 包同样经 `/npm/` 前缀代理。客户端既可请求 `/npm/@scope/name`
+也可请求 `/npm/@scope%2fname`（编码形式），代理会保持编码一致地拼接上游与落盘路径，
+且元数据中内嵌的 tarball URL（如 `https://registry.npmjs.org/@scope%2fname/-/name-1.0.0.tgz`）
+会原样重写为 `{domain}/npm/@scope%2fname/-/name-1.0.0.tgz`，保证客户端可回源下载。
 
 ## 配置 Maven 客户端
 
@@ -125,7 +153,7 @@ dotnet nuget add source https://nuget-cdn.example.com/v3/index.json \
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
     <mirrors>
         <mirror>
-            <id>nuget-cache-maven</id>
+            <id>orbitra-maven</id>
             <mirrorOf>central</mirrorOf>
             <url>https://nuget-cdn.example.com/maven/</url>
         </mirror>
@@ -138,7 +166,7 @@ dotnet nuget add source https://nuget-cdn.example.com/v3/index.json \
 ```xml
 <repositories>
     <repository>
-        <id>nuget-cache-maven</id>
+        <id>orbitra-maven</id>
         <url>https://nuget-cdn.example.com/maven/</url>
         <releases><enabled>true</enabled></releases>
         <snapshots><enabled>true</enabled></snapshots>
@@ -174,22 +202,36 @@ allprojects {
 ## 缓存目录结构
 
 ```
-nuget-cache/
-├── newtonsoft.json/
-│   └── 13.0.3/
-│       ├── newtonsoft.json.13.0.3.nupkg
-│       └── newtonsoft.json.nuspec
-├── microsoft.extensions.logging/
-│   └── 8.0.0/
-│       └── microsoft.extensions.logging.8.0.0.nupkg
-└── maven/                               # Maven 独立子目录，与 NuGet 天然隔离
-    └── org/springframework/spring-core/
-        └── 6.1.0/
-            ├── spring-core-6.1.0.pom
-            ├── spring-core-6.1.0.jar
-            ├── spring-core-6.1.0.jar.sha1
-            └── ...
+cache/                                  # {CACHE_PATH} 默认根目录
+├── nuget/                              # NuGet 独立子目录（id/version 小写）
+│   └── newtonsoft.json/
+│       └── 13.0.3/
+│           ├── newtonsoft.json.13.0.3.nupkg
+│           └── newtonsoft.json.nuspec
+├── maven/                              # Maven 独立子目录，坐标大小写保留
+│   └── org/springframework/spring-core/
+│       └── 6.1.0/
+│           ├── spring-core-6.1.0.pom
+│           ├── spring-core-6.1.0.jar
+│           ├── spring-core-6.1.0.jar.sha1
+│           └── ...
+└── npm/                                # npm 独立子目录
+    └── express/
+        └── -/
+            └── express-4.19.2.tgz
 ```
+
+> **旧缓存懒迁移**：老版本 NuGet 包文件落在 `{CACHE_PATH}/{id}/{version}/`（无 `nuget/` 子目录）。
+> 升级后请求新路径 `{CACHE_PATH}/nuget/{id}/{version}/` 未命中时，会自动回查旧路径并将文件
+> 原子搬移到新路径（并发请求下目标已存在则忽略，由先完成的搬移生效）。
+
+## npm 缓存策略
+
+| 文件类型 | 缓存策略 | 说明 |
+|---------|---------|------|
+| tarball（路径含 `/-/` 或以 `.tgz` 结尾） | 磁盘永久缓存 | 落盘到 `{CACHE_PATH}/npm/{path}`，复用共享磁盘缓存服务 |
+| 包元数据（`/{pkg}`、`/{pkg}/{version}`，含 scope 包） | 内存短 TTL 缓存 | 默认 60 秒（`NPM_METADATA_TTL` 可配），key 按 Accept 变体区分（缩写 `install-v1+json` vs 全量） |
+| `/-/ping`、`/-/v1/search` 等内部端点 | 不缓存 | 兜底透传上游响应 |
 
 ## Maven 缓存策略
 
@@ -209,7 +251,7 @@ nuget-cache/
 
 | 配置                                 | 值    | 说明                 |
 |------------------------------------|------|--------------------|
-| `MaxConcurrentConnections`         | 2000 | 最大并发 TCP 连接        |
+| `MaxConcurrentConnections`         | 5000 | 最大并发 TCP 连接        |
 | `MaxConcurrentUpgradedConnections` | 500  | 最大升级连接 (WebSocket) |
 | `KeepAliveTimeout`                 | 2 分钟 | 长连接保活超时            |
 | `RequestHeadersTimeout`            | 30 秒 | 请求头超时              |
@@ -218,19 +260,20 @@ nuget-cache/
 
 | 配置                            | 值     | 说明        |
 |-------------------------------|-------|-----------|
-| `Timeout`                     | 110 秒 | 请求总超时     |
+| `Timeout`                     | 120 秒 | 请求总超时     |
 | `ConnectTimeout`              | 30 秒  | 连接建立超时    |
-| `MaxConnectionsPerServer`     | 100   | 每服务器最大连接数 |
+| `MaxConnectionsPerServer`     | 1000  | 每服务器最大连接数 |
 | `PooledConnectionLifetime`    | 5 分钟  | 连接池存活时间   |
 | `PooledConnectionIdleTimeout` | 1 分钟  | 空闲连接超时    |
 
 ## 日志示例
 
 ```
-info: GET /v3/index.json
-info: Package cache hit: newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg, Size: 654321 bytes
-info: Download success (2345ms): /app/nuget-cache/serilog/2.10.0/serilog.2.10.0.nupkg, Size: 78901 bytes
-warn: Download failed (30000ms): 503 - https://api.nuget.org/v3-flatcontainer/...
+GET /nuget/v3/index.json
+info: NuGet cache lazy migrated: /app/cache/newtonsoft.json/13.0.3/... -> /app/cache/nuget/newtonsoft.json/13.0.3/...
+info: Cache hit: /app/cache/nuget/serilog/2.10.0/serilog.2.10.0.nupkg
+info: Download success: /app/cache/npm/express/-/express-4.19.2.tgz, Size: 78901 bytes
+warn: Download failed: 503 - https://api.nuget.org/v3-flatcontainer/...
 ```
 
 ## 技术栈

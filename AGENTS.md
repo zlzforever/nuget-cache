@@ -1,10 +1,10 @@
-# AGENTS.md - NuGet Cache Project
+# AGENTS.md - Orbitra Project
 
 Guidelines for AI coding agents working in this repository.
 
 ## Project Overview
 
-A high-performance NuGet package caching proxy service built with:
+A high-performance multi-repo package caching proxy service (NuGet + Maven + npm) built with:
 - **Framework**: .NET 10.0 ASP.NET Core
 - **API Style**: Minimal APIs (not MVC/controllers)
 - **Compilation**: AOT (Ahead-of-Time) native compilation enabled
@@ -19,10 +19,10 @@ dotnet restore                    # Restore dependencies
 dotnet build                      # Build (Debug)
 dotnet build -c Release           # Build (Release)
 dotnet publish -c Release         # Publish AOT native binary
-docker build -t nuget-cache:latest .  # Docker build
+docker build -t orbitra:latest .  # Docker build
 
 # Run locally (requires NUGET_PROXY_DOMAIN env var; PROXY_DOMAIN still works as deprecated fallback)
-NUGET_PROXY_DOMAIN=https://your-domain.com/ dotnet run --project src/NuGetCache/NuGetCache.csproj
+NUGET_PROXY_DOMAIN=https://your-domain.com/ dotnet run --project src/Orbitra/Orbitra.csproj
 ```
 
 ## Test Commands
@@ -134,20 +134,25 @@ using var response = await httpClient.GetAsync(url);
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `NUGET_PROXY_DOMAIN` | Yes | External URL (e.g., `https://nuget.example.com/`). Deprecated fallback: `PROXY_DOMAIN` (with warning log) |
-| `CACHE_PATH` | No | Disk cache root directory shared by NuGet/Maven (default: `nuget-cache`) |
+| `CACHE_PATH` | No | Disk cache root directory shared by NuGet/Maven/npm (default: `cache`; repos isolated under `nuget/` `maven/` `npm/`) |
 | `MAVEN_UPSTREAM_URL` | No | Maven upstream base URL (default: Maven Central) |
+| `NPM_UPSTREAM_URL` | No | npm upstream base URL (default: `https://registry.npmjs.org`) |
+| `NPM_METADATA_TTL` | No | npm package metadata in-memory TTL in seconds (default: `60`; abbreviated/full variants cached separately) |
 
 ### Caching Strategy
 
-- **Memory cache**: 60-minute TTL for `index.json` files
-- **Disk cache**: Permanent for `.nupkg` files
+- **Memory cache**: NuGet `index.json` 60-minute TTL; Maven `maven-metadata.xml` (snapshot 5 min / release 60 min); npm package metadata short TTL (`NPM_METADATA_TTL`, default 60s)
+- **Disk cache**: Permanent for `.nupkg` files, Maven artifacts, npm tarballs (`{CACHE_PATH}/nuget/`, `{CACHE_PATH}/maven/`, `{CACHE_PATH}/npm/`)
 
-### API Endpoints
+### API Endpoints (all support GET + HEAD)
 
-1. `GET /v3/index.json` - NuGet service index (proxied + URL rewrite)
-2. `GET /v3-flatcontainer/{id}/index.json` - Package version list
-3. `GET /v3-flatcontainer/{id}/{version}/{file}` - Package file download
-4. `GET /*` (fallback) - Returns 404 with logging
+1. `GET|HEAD /nuget/v3/index.json` - NuGet service index (proxied + URL rewrite to `{domain}/nuget/v3-flatcontainer/`)
+2. `GET|HEAD /nuget/v3-flatcontainer/{id}/index.json` - Package version list
+3. `GET|HEAD /nuget/v3-flatcontainer/{id}/{version}/{file}` - Package file download (disk cache + legacy-path lazy migration)
+4. `GET|HEAD /maven/{**path}` - Maven proxy (artifacts disk cache, metadata memory cache)
+5. `GET|HEAD /npm/{**path}` - npm proxy (tarball disk cache, metadata memory cache, tarball URL rewrite)
+6. `GET|HEAD /` - Health check
+7. `GET|HEAD /*` (fallback) - Returns 404 with logging
 
 ---
 
@@ -205,5 +210,5 @@ app.MapGet("/new-path", async (ParamType param, IHttpClientFactory http) =>
 ### Debugging
 
 ```bash
-ASPNETCORE_ENVIRONMENT=Development dotnet run --project src/NuGetCache/NuGetCache.csproj
+ASPNETCORE_ENVIRONMENT=Development dotnet run --project src/Orbitra/Orbitra.csproj
 ```

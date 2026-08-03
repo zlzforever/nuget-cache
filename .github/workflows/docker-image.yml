@@ -17,9 +17,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build the Docker image
       run: |
-          docker build . --file Dockerfile --tag zlzforever/nuget-cache:${{ github.ref_name }}
-          docker tag zlzforever/nuget-cache:${{ github.ref_name }} zlzforever/nuget-cache
+          docker build . --file Dockerfile --tag zlzforever/orbitra:${{ github.ref_name }}
+          docker tag zlzforever/orbitra:${{ github.ref_name }} zlzforever/orbitra
     - name: Publish the Docker image
       run: |
-          docker push zlzforever/nuget-cache:${{ github.ref_name }}
-          docker push zlzforever/nuget-cache
+          docker push zlzforever/orbitra:${{ github.ref_name }}
+          docker push zlzforever/orbitra

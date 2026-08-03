@@ -1,6 +1,6 @@
-using NuGetCache.Configuration;
-using NuGetCache.Handlers;
-using NuGetCache.Services;
+using Orbitra.Configuration;
+using Orbitra.Handlers;
+using Orbitra.Services;
 
 // 组合根：集中完成 Kestrel 配置、DI 注册与路由注册，业务逻辑分布在 Handlers / Services / Configuration 中
 
@@ -29,7 +29,7 @@ builder.WebHost.ConfigureKestrel(serverOptions =>
     serverOptions.AllowSynchronousIO = false;
 });
 
-// 统一的 SocketsHttpHandler 连接池配置，NuGet 与 Maven 复用同一套参数
+// 统一的 SocketsHttpHandler 连接池配置，NuGet/Maven/npm 复用同一套参数
 static SocketsHttpHandler CreateSocketsHttpHandler() => new()
 {
     PooledConnectionLifetime = TimeSpan.FromMinutes(5),
@@ -45,6 +45,7 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<DiskCacheService>();
 builder.Services.AddSingleton<NuGetProxyHandler>();
 builder.Services.AddSingleton<MavenProxyHandler>();
+builder.Services.AddSingleton<NpmProxyHandler>();
 
 builder.Services.AddHttpClient("NuGet")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
@@ -55,14 +56,27 @@ builder.Services.AddHttpClient("Maven")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
     .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
 
+// npm 专用 HttpClient，复用相同的连接池配置
+builder.Services.AddHttpClient("npm")
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
+    .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
+
 builder.Services.AddMemoryCache();
 
 var app = builder.Build();
+
+// 请求日志中间件：统一打印每个请求的方法与路径，保证所有代理请求（NuGet/Maven/npm/健康检查/404）实时有迹可循
+app.Use(async (context, next) =>
+{
+    app.Logger.LogInformation("{Method} {Path}", context.Request.Method, context.Request.Path);
+    await next(context);
+});
 
 // 启动即校验配置（fail-fast），并解析 handler 供路由注册
 var proxyOptions = app.Services.GetRequiredService<ProxyOptions>();
 var nuGetHandler = app.Services.GetRequiredService<NuGetProxyHandler>();
 var mavenHandler = app.Services.GetRequiredService<MavenProxyHandler>();
+var npmHandler = app.Services.GetRequiredService<NpmProxyHandler>();
 
 if (!Directory.Exists(proxyOptions.CachePath))
 {
@@ -71,20 +85,25 @@ if (!Directory.Exists(proxyOptions.CachePath))
 app.Logger.LogInformation("Cache root path: {Path}", proxyOptions.CachePath);
 app.Logger.LogInformation("NuGet proxy domain: {Domain}", proxyOptions.NuGetProxyDomain);
 app.Logger.LogInformation("Maven upstream: {Upstream}", proxyOptions.MavenUpstream);
+app.Logger.LogInformation("npm upstream: {Upstream}", proxyOptions.NpmUpstream);
 
-// NuGet 路由：服务索引、包版本索引、包文件下载
-app.MapGet("/v3/index.json", nuGetHandler.GetServiceIndex);
-app.MapGet("/v3-flatcontainer/{id}/index.json", nuGetHandler.GetPackageIndex);
-app.MapGet("/v3-flatcontainer/{id}/{version}/{file}", nuGetHandler.GetPackageFile);
+// NuGet 路由（/nuget 前缀）：服务索引、包版本索引、包文件下载，均支持 GET/HEAD
+app.MapMethods("/nuget/v3/index.json", ["GET", "HEAD"], (Delegate)nuGetHandler.GetServiceIndex);
+app.MapMethods("/nuget/v3-flatcontainer/{id}/index.json", ["GET", "HEAD"], (Delegate)nuGetHandler.GetPackageIndex);
+app.MapMethods("/nuget/v3-flatcontainer/{id}/{version}/{file}", ["GET", "HEAD"], (Delegate)nuGetHandler.GetPackageFile);
 
 // Maven 通配路由：{**path} 与原请求路径 1:1 透传上游，产物磁盘永久缓存，元数据内存缓存
-app.MapGet("/maven/{**path}", mavenHandler.HandleMavenRoute);
+app.MapMethods("/maven/{**path}", ["GET", "HEAD"], (Delegate)mavenHandler.HandleMavenRoute);
 
-app.MapGet("/", () => Results.Text("I am ok: " + DateTimeOffset.UtcNow));
-app.MapFallback((HttpContext ctx) =>
+// npm 通配路由：{**path} 透传 NPM 上游，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存
+app.MapMethods("/npm/{**path}", ["GET", "HEAD"], (Delegate)npmHandler.HandleNpmRoute);
+
+app.MapMethods("/", ["GET", "HEAD"], (HttpContext httpContext) =>
 {
-    app.Logger.LogInformation("[Fallback] {Method} {Path} -> 404", ctx.Request.Method, ctx.Request.Path);
-    return Results.NotFound();
+    // 健康检查根路径：显式设置 Content-Length，保证 HEAD 与 GET 一致
+    var body = "I am ok: " + DateTimeOffset.UtcNow;
+    return TextContentResult.Build(httpContext, body, "text/plain; charset=utf-8");
 });
+app.MapFallback(() => Results.NotFound());
 
 await app.RunAsync();
