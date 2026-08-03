@@ -59,6 +59,13 @@ builder.Services.AddMemoryCache();
 
 var app = builder.Build();
 
+// 请求日志中间件：统一打印每个请求的方法与路径，保证所有代理请求（NuGet/Maven/健康检查/404）实时有迹可循
+app.Use(async (context, next) =>
+{
+    app.Logger.LogInformation("{Method} {Path}", context.Request.Method, context.Request.Path);
+    await next(context);
+});
+
 // 启动即校验配置（fail-fast），并解析 handler 供路由注册
 var proxyOptions = app.Services.GetRequiredService<ProxyOptions>();
 var nuGetHandler = app.Services.GetRequiredService<NuGetProxyHandler>();
@@ -81,10 +88,6 @@ app.MapGet("/v3-flatcontainer/{id}/{version}/{file}", nuGetHandler.GetPackageFil
 app.MapGet("/maven/{**path}", mavenHandler.HandleMavenRoute);
 
 app.MapGet("/", () => Results.Text("I am ok: " + DateTimeOffset.UtcNow));
-app.MapFallback((HttpContext ctx) =>
-{
-    app.Logger.LogInformation("[Fallback] {Method} {Path} -> 404", ctx.Request.Method, ctx.Request.Path);
-    return Results.NotFound();
-});
+app.MapFallback(() => Results.NotFound());
 
 await app.RunAsync();

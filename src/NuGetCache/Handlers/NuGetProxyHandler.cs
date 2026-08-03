@@ -62,8 +62,7 @@ public sealed class NuGetProxyHandler
     /// <returns>内存命中或上游 2xx 时返回 application/json；上游非 2xx 透传状态码。</returns>
     public async Task<IResult> GetServiceIndex()
     {
-        _logger.LogInformation("GET /v3/index.json");
-
+        // 请求日志统一由 Program.cs 请求日志中间件打印，此处不再重复记录
         if (_cache.TryGetValue(ServiceIndexCacheKey, out string? cachedJson) && cachedJson != null)
         {
             return Results.Content(cachedJson, "application/json");
