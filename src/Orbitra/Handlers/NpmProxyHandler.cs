@@ -111,8 +111,9 @@ public sealed class NpmProxyHandler
         var cacheFile = Path.Combine(_options.CachePath, "npm", path);
         var targetUrl = BuildUpstreamUrl(path, httpContext);
 
+        // 单上游：传单元素列表，行为与改造前一致（仅尝试一次，非 2xx 透传状态码）
         return await _diskCache.DownloadToCacheAsync(
-            "npm", targetUrl, cacheFile, "application/octet-stream", cancellationToken);
+            "npm", new[] { targetUrl }, cacheFile, "application/octet-stream", cancellationToken);
     }
 
     /// <summary>

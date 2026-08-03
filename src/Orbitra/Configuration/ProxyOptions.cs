@@ -6,7 +6,8 @@ namespace Orbitra.Configuration;
 /// 优先读取新名，未设置时回退旧名并输出弃用警告日志；两者皆缺或非法时启动即抛异常。
 /// <c>CACHE_PATH</c> 为 NuGet/Maven/npm 共用磁盘缓存根目录，保持原名不带前缀；
 /// 各仓库在根目录下按 <c>nuget/</c>、<c>maven/</c>、<c>npm/</c> 子目录隔离。
-/// <c>MAVEN_UPSTREAM_URL</c> 已有 <c>MAVEN_</c> 前缀，保持原名；
+/// <c>MAVEN_UPSTREAM_URL</c> 已有 <c>MAVEN_</c> 前缀，保持原名，且支持逗号分隔多值
+/// （<c>https://a/,https://b/,https://c/</c>），顺序即失败回退顺序；
 /// npm 新增 <c>NPM_UPSTREAM_URL</c> 与 <c>NPM_METADATA_TTL</c>。
 /// </summary>
 public sealed class ProxyOptions
@@ -50,9 +51,11 @@ public sealed class ProxyOptions
     public string CachePath { get; }
 
     /// <summary>
-    /// Maven 上游根地址（绝对 URI，去除末尾斜杠）。用于拼接 <c>{MAVEN_UPSTREAM_URL}/{path}</c>。
+    /// Maven 上游有序列表（每项均为绝对 URI，去除末尾斜杠），顺序即失败回退顺序。
+    /// 用于拼接 <c>{upstream}/{path}</c>；源自 <c>MAVEN_UPSTREAM_URL</c> 逗号分隔配置，
+    /// 未设置时默认单元素列表（Maven Central）。
     /// </summary>
-    public string MavenUpstream { get; }
+    public IReadOnlyList<string> MavenUpstreams { get; }
 
     /// <summary>
     /// npm 上游根地址（绝对 URI，去除末尾斜杠）。用于拼接 <c>{NPM_UPSTREAM_URL}/{path}</c>。
@@ -75,14 +78,14 @@ public sealed class ProxyOptions
     private ProxyOptions(
         Uri nuGetProxyDomain,
         string cachePath,
-        string mavenUpstream,
+        IReadOnlyList<string> mavenUpstreams,
         string npmUpstream,
         string npmUpstreamHost,
         int npmMetadataTtlSeconds)
     {
         NuGetProxyDomain = nuGetProxyDomain;
         CachePath = cachePath;
-        MavenUpstream = mavenUpstream;
+        MavenUpstreams = mavenUpstreams;
         NpmUpstream = npmUpstream;
         NpmUpstreamHost = npmUpstreamHost;
         NpmMetadataTtlSeconds = npmMetadataTtlSeconds;
@@ -125,19 +128,39 @@ public sealed class ProxyOptions
             : cachePath;
 
         var mavenUpstreamEnv = Environment.GetEnvironmentVariable(MavenUpstreamUrlVariable);
+        IReadOnlyList<string> mavenUpstreams;
         if (string.IsNullOrWhiteSpace(mavenUpstreamEnv))
         {
-            mavenUpstreamEnv = DefaultMavenUpstreamUrl;
+            // 未设置 → 默认 Maven Central（单元素列表）
+            mavenUpstreams = new[] { DefaultMavenUpstreamUrl };
         }
-
-        // 启动时校验 Maven 上游地址合法性，失败抛异常（与代理域名校验方式一致）
-        if (!Uri.TryCreate(mavenUpstreamEnv, UriKind.Absolute, out var mavenUpstreamUri))
+        else
         {
-            throw new ArgumentException("Invalid Maven upstream URI.");
-        }
+            // 逗号分隔多上游：Split(',') + Trim + 过滤空串，容忍 "a/,"、"a/,,b/" 等写法
+            var segments = mavenUpstreamEnv
+                .Split(',')
+                .Select(segment => segment.Trim())
+                .Where(segment => segment.Length > 0)
+                .ToArray();
 
-        // 归一化上游地址：去除末尾 '/'，保证与 {**path} 拼接时路径正确
-        var mavenUpstream = mavenUpstreamUri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+            // 设置了但拆分后为空（全空白/全逗号）→ 配置错误，启动即抛异常（fail-fast）
+            if (segments.Length == 0)
+            {
+                throw new ArgumentException(
+                    $"{MavenUpstreamUrlVariable} is set but contains no valid upstream URL after splitting by ','.");
+            }
+
+            // 逐个校验合法性并归一化（去除末尾 '/'）；任一非法即抛异常，避免运行期静默跳过某上游
+            mavenUpstreams = segments.Select(segment =>
+            {
+                if (!Uri.TryCreate(segment, UriKind.Absolute, out var upstreamUri))
+                {
+                    throw new ArgumentException($"Invalid Maven upstream URI: {segment}");
+                }
+
+                return upstreamUri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+            }).ToArray();
+        }
 
         var npmUpstreamEnv = Environment.GetEnvironmentVariable(NpmUpstreamUrlVariable);
         if (string.IsNullOrWhiteSpace(npmUpstreamEnv))
@@ -162,6 +185,6 @@ public sealed class ProxyOptions
             npmMetadataTtlSeconds = DefaultNpmMetadataTtlSeconds;
         }
 
-        return new ProxyOptions(proxyDomain, cachePath, mavenUpstream, npmUpstream, npmUpstreamHost, npmMetadataTtlSeconds);
+        return new ProxyOptions(proxyDomain, cachePath, mavenUpstreams, npmUpstream, npmUpstreamHost, npmMetadataTtlSeconds);
     }
 }

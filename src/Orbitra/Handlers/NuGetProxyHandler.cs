@@ -190,7 +190,8 @@ public sealed class NuGetProxyHandler
 
         var targetUrl = $"{NuGetFlatContainerUrlBase}/{idLower}/{versionLower}/{fileLower}";
 
+        // 单上游：传单元素列表，行为与改造前一致（仅尝试一次，非 2xx 透传状态码）
         return await _diskCache.DownloadToCacheAsync(
-            "NuGet", targetUrl, cacheFile, fallbackContentType, cancellationToken);
+            "NuGet", new[] { targetUrl }, cacheFile, fallbackContentType, cancellationToken);
     }
 }

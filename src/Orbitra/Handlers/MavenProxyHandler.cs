@@ -5,10 +5,11 @@ using Orbitra.Services;
 namespace Orbitra.Handlers;
 
 /// <summary>
-/// Maven 代理请求处理器：承载 /maven/{**path} 通配路由（支持 GET/HEAD）。路径与原请求 1:1 透传上游。
+/// Maven 代理请求处理器：承载 /maven/{**path} 通配路由（支持 GET/HEAD）。路径与原请求 1:1 透传上游，
+/// 支持多上游按配置顺序失败回退（网络异常或非 2xx 换下一个上游）。
 /// maven-metadata.xml 走内存缓存（快照 5 分钟 / 非快照 60 分钟），返回前显式设置 Content-Length
 /// 保证 HEAD 与 GET 一致；其余产物与校验和文件经 <see cref="DiskCacheService"/> 磁盘永久缓存到
-/// <c>{CACHE_PATH}/maven/{path}</c>（大小写保留）。
+/// <c>{CACHE_PATH}/maven/{path}</c>（大小写保留，缓存路径与来源上游无关）。
 /// </summary>
 public sealed class MavenProxyHandler
 {
@@ -79,7 +80,7 @@ public sealed class MavenProxyHandler
         // 因此使用 Path.GetFileName 精确匹配，避免子串匹配误伤
         if (Path.GetFileName(path).Equals("maven-metadata.xml", StringComparison.Ordinal))
         {
-            return await HandleMavenMetadata(path, httpContext);
+            return await HandleMavenMetadata(path, httpContext, cancellationToken);
         }
 
         // 其余产物与校验和文件走磁盘永久缓存
@@ -87,12 +88,15 @@ public sealed class MavenProxyHandler
     }
 
     /// <summary>
-    /// 处理 maven-metadata.xml：仅成功响应写内存缓存，TTL 快照 5 分钟 / 非快照 60 分钟，不落盘。
+    /// 处理 maven-metadata.xml：按上游顺序逐一尝试，网络异常/非 2xx 记录并回退下一个，
+    /// 首个 2xx 读 xml → 写内存缓存（TTL 快照 5 分钟 / 非快照 60 分钟，不落盘）→ 返回；
+    /// 全部失败返回最后一个非 2xx 状态码（全为网络异常 → 502）。内存缓存命中直接返回，不触碰上游。
     /// </summary>
     /// <param name="path">Maven 元数据文件路径。</param>
     /// <param name="httpContext">当前请求上下文（用于显式设置 Content-Length 响应头）。</param>
-    /// <returns>内存命中或上游 2xx 时返回 application/xml（上游 Content-Type 优先）；上游非 2xx 透传状态码。</returns>
-    private async Task<IResult> HandleMavenMetadata(string path, HttpContext httpContext)
+    /// <param name="cancellationToken">请求取消令牌（客户端断开时取消上游请求）。</param>
+    /// <returns>内存命中或上游 2xx 时返回 application/xml（上游 Content-Type 优先）；全部失败透传最后状态码或 502。</returns>
+    private async Task<IResult> HandleMavenMetadata(string path, HttpContext httpContext, CancellationToken cancellationToken)
     {
         var cacheKey = $"{MetadataCacheKeyPrefix}{path}";
 
@@ -102,39 +106,86 @@ public sealed class MavenProxyHandler
             return TextContentResult.Build(httpContext, cachedXml, "application/xml");
         }
 
-        var targetUrl = $"{_options.MavenUpstream}/{path}";
         var httpClient = _httpClientFactory.CreateClient("Maven");
-        using var response = await httpClient.GetAsync(targetUrl);
+        // 记录最后一个非 2xx 状态码；0 表示尚未收到任何上游响应（全部为网络异常）
+        var lastStatusCode = 0;
 
-        if (!response.IsSuccessStatusCode)
+        for (var index = 0; index < _options.MavenUpstreams.Count; index++)
         {
-            _logger.LogWarning("Maven metadata fetch failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
-            return Results.StatusCode((int)response.StatusCode);
+            var targetUrl = $"{_options.MavenUpstreams[index]}/{path}";
+            HttpResponseMessage response;
+
+            try
+            {
+                response = await httpClient.GetAsync(targetUrl, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                // 网络异常（连接失败/DNS/拒绝等）：结构化记录后回退下一个上游
+                _logger.LogWarning("Maven upstream {Index} failed: {Error} - {Url}", index, ex.Message, targetUrl);
+                continue;
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // 客户端未取消但请求超时（HttpClient.Timeout 触发）：视为上游失败，回退下一个
+                _logger.LogWarning("Maven upstream {Index} failed: timeout - {Url}", index, targetUrl);
+                continue;
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    lastStatusCode = (int)response.StatusCode;
+                    _logger.LogWarning("Maven upstream {Index} failed: {StatusCode} - {Url}",
+                        index, lastStatusCode, targetUrl);
+                    continue;
+                }
+
+                var xml = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                var ttl = IsSnapshotMetadata(path) ? SnapshotMetadataTtl : MetadataTtl;
+                _cache.Set(cacheKey, xml, ttl);
+                _logger.LogInformation("Maven metadata served from upstream {Index}: {Url}", index, targetUrl);
+                _logger.LogInformation("Maven metadata cached ({Ttl}): {Path}", ttl, path);
+
+                var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/xml";
+                return TextContentResult.Build(httpContext, xml, contentType);
+            }
         }
 
-        var xml = await response.Content.ReadAsStringAsync();
+        // 全部失败：最后一个非 2xx 状态码；全为网络异常（无任何响应）→ 502 Bad Gateway
+        if (lastStatusCode != 0)
+        {
+            _logger.LogError("All Maven upstreams failed, last status {StatusCode}", lastStatusCode);
+            return Results.StatusCode(lastStatusCode);
+        }
 
-        var ttl = IsSnapshotMetadata(path) ? SnapshotMetadataTtl : MetadataTtl;
-        _cache.Set(cacheKey, xml, ttl);
-        _logger.LogInformation("Maven metadata cached ({Ttl}): {Path}", ttl, path);
-
-        var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/xml";
-        return TextContentResult.Build(httpContext, xml, contentType);
+        _logger.LogError("All Maven upstreams failed, no upstream responded");
+        return Results.StatusCode(StatusCodes.Status502BadGateway);
     }
 
     /// <summary>
-    /// 处理 Maven 产物与校验和文件：磁盘永久缓存到 {CACHE_PATH}/maven/{path}，上游 2xx 才落盘。
+    /// 处理 Maven 产物与校验和文件：磁盘永久缓存到 {CACHE_PATH}/maven/{path}，按多上游顺序回退下载，
+    /// 首个上游 2xx 才落盘，缓存路径与来源上游无关。
     /// </summary>
     /// <param name="path">Maven 产物文件路径。</param>
     /// <param name="cancellationToken">请求取消令牌（客户端断开时取消写入并清理临时文件）。</param>
-    /// <returns>磁盘命中或下载成功后返回本地文件；上游非 2xx 透传状态码；磁盘写失败返回 503。</returns>
+    /// <returns>磁盘命中或下载成功后返回本地文件；全部失败透传最后状态码或 502；磁盘写失败返回 503。</returns>
     private async Task<IResult> HandleMavenArtifact(string path, CancellationToken cancellationToken)
     {
         var cacheFile = Path.Combine(_options.CachePath, "maven", path);
         var fallbackContentType = GetMavenContentType(path);
-        var targetUrl = $"{_options.MavenUpstream}/{path}";
 
-        return await _diskCache.DownloadToCacheAsync("Maven", targetUrl, cacheFile, fallbackContentType, cancellationToken);
+        // 按配置顺序生成上游候选 URL 列表，DiskCacheService 内部顺序回退（首个 2xx 落盘）
+        var targetUrls = new List<string>(_options.MavenUpstreams.Count);
+        foreach (var upstream in _options.MavenUpstreams)
+        {
+            targetUrls.Add($"{upstream}/{path}");
+        }
+
+        return await _diskCache.DownloadToCacheAsync(
+            "Maven", targetUrls, cacheFile, fallbackContentType, cancellationToken);
     }
 
     /// <summary>
