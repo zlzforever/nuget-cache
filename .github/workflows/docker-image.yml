@@ -1,26 +1,25 @@
 name: Docker Image CI
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'dev'
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - name: Login docker regsitry
       run: docker login -u ${{ secrets.DOCKER_USER }} -p  ${{ secrets.DOCKER_PASSWORD }}
     - uses: actions/checkout@v4
     - name: Build the Docker image
       run: |
-          docker build . --file Dockerfile --tag zlzforever/orbitra:202600416.2
-          docker build . --file Dockerfile --tag zlzforever/orbitra 
+          docker build . --file Dockerfile --tag zlzforever/orbitra:${{ github.ref_name }}
+          docker tag zlzforever/orbitra:${{ github.ref_name }} zlzforever/orbitra
     - name: Publish the Docker image
       run: |
-          docker push zlzforever/orbitra:202600416.2
+          docker push zlzforever/orbitra:${{ github.ref_name }}
           docker push zlzforever/orbitra
