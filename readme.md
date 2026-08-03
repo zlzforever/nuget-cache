@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **NuGet 下载代理**: 代理 `/nuget/v3/index.json` 和 `/nuget/v3-flatcontainer/` 请求
-- **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游）
+- **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游），支持**多上游按序回退**
 - **npm 代理**: `/npm/{**path}` 通配路由透传 npm registry（或自配上游），tarball 磁盘永久缓存、包元数据内存短 TTL 缓存
 - **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball 等产物文件缓存到本地磁盘，永久保存
 - **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒
@@ -43,7 +43,7 @@
 |----------------|---------------|--------------------------------------------|
 | `NUGET_PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/`。旧名 `PROXY_DOMAIN` 仍支持（已弃用，命中时输出警告日志） |
 | `CACHE_PATH`   | `cache` | NuGet/Maven/npm 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`） |
-| `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址（可切换国内镜像，如 `https://maven.aliyun.com/repository/central`） |
+| `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址。支持**逗号分隔多值**（如 `https://maven.aliyun.com/repository/central,https://repo.maven.apache.org/maven2`），顺序即失败回退顺序（网络异常或非 2xx 自动换下一个上游）；单值行为与旧版一致。注意：URL 内不得含逗号 |
 | `NPM_UPSTREAM_URL` | `https://registry.npmjs.org` | npm 上游地址（可切换国内镜像，如 `https://registry.npmmirror.com`） |
 | `NPM_METADATA_TTL` | `60` | npm 包元数据内存缓存 TTL（秒），缩写与全量变体分别缓存 |
 
@@ -242,7 +242,7 @@ cache/                                  # {CACHE_PATH} 默认根目录
 | `maven-metadata.xml`（含 `-SNAPSHOT` 段） | 内存缓存 5 分钟 | 快照版本变化频繁，缩短 TTL |
 
 - Maven 路径**大小写敏感**（坐标区分大小写），原样保留大小写代理与缓存
-- 上游 4xx/5xx 透传状态码，不落盘不缓存
+- 多上游按配置顺序回退：当前上游网络异常或返回非 2xx 时自动尝试下一个；全部失败返回最后一个非 2xx 状态码（全为网络异常返回 502），磁盘写失败返回 503（本地故障，不换源）
 - Maven 响应体原样透传，无需 URL 重写（pom/metadata 仅含坐标，不含绝对 URL）
 
 ## 性能配置

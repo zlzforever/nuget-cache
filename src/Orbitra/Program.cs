@@ -84,7 +84,7 @@ if (!Directory.Exists(proxyOptions.CachePath))
 }
 app.Logger.LogInformation("Cache root path: {Path}", proxyOptions.CachePath);
 app.Logger.LogInformation("NuGet proxy domain: {Domain}", proxyOptions.NuGetProxyDomain);
-app.Logger.LogInformation("Maven upstream: {Upstream}", proxyOptions.MavenUpstream);
+app.Logger.LogInformation("Maven upstreams: {Upstreams}", string.Join(", ", proxyOptions.MavenUpstreams));
 app.Logger.LogInformation("npm upstream: {Upstream}", proxyOptions.NpmUpstream);
 
 // NuGet 路由（/nuget 前缀）：服务索引、包版本索引、包文件下载，均支持 GET/HEAD
