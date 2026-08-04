@@ -43,9 +43,11 @@ builder.Services.AddSingleton(sp =>
     ProxyOptions.Load(sp.GetRequiredService<ILogger<ProxyOptions>>()));
 
 builder.Services.AddSingleton<DiskCacheService>();
+builder.Services.AddSingleton<DockerTokenService>();
 builder.Services.AddSingleton<NuGetProxyHandler>();
 builder.Services.AddSingleton<MavenProxyHandler>();
 builder.Services.AddSingleton<NpmProxyHandler>();
+builder.Services.AddSingleton<DockerProxyHandler>();
 
 builder.Services.AddHttpClient("NuGet")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
@@ -59,6 +61,11 @@ builder.Services.AddHttpClient("Maven")
 // npm 专用 HttpClient，复用相同的连接池配置
 builder.Services.AddHttpClient("npm")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(120))
+    .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
+
+// Docker 专用 HttpClient：连接池参数与其余一致，但超时放宽至 30 分钟（大 blob 下载）
+builder.Services.AddHttpClient("Docker")
+    .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromMinutes(30))
     .ConfigurePrimaryHttpMessageHandler(CreateSocketsHttpHandler);
 
 builder.Services.AddMemoryCache();
@@ -77,6 +84,7 @@ var proxyOptions = app.Services.GetRequiredService<ProxyOptions>();
 var nuGetHandler = app.Services.GetRequiredService<NuGetProxyHandler>();
 var mavenHandler = app.Services.GetRequiredService<MavenProxyHandler>();
 var npmHandler = app.Services.GetRequiredService<NpmProxyHandler>();
+var dockerHandler = app.Services.GetRequiredService<DockerProxyHandler>();
 
 if (!Directory.Exists(proxyOptions.CachePath))
 {
@@ -86,6 +94,7 @@ app.Logger.LogInformation("Cache root path: {Path}", proxyOptions.CachePath);
 app.Logger.LogInformation("NuGet proxy domain: {Domain}", proxyOptions.NuGetProxyDomain);
 app.Logger.LogInformation("Maven upstreams: {Upstreams}", string.Join(", ", proxyOptions.MavenUpstreams));
 app.Logger.LogInformation("npm upstream: {Upstream}", proxyOptions.NpmUpstream);
+app.Logger.LogInformation("docker upstreams: {Upstreams}", string.Join(", ", proxyOptions.DockerUpstreams));
 
 // NuGet 路由（/nuget 前缀）：服务索引、包版本索引、包文件下载，均支持 GET/HEAD
 app.MapMethods("/nuget/v3/index.json", ["GET", "HEAD"], (Delegate)nuGetHandler.GetServiceIndex);
@@ -97,6 +106,12 @@ app.MapMethods("/maven/{**path}", ["GET", "HEAD"], (Delegate)mavenHandler.Handle
 
 // npm 通配路由：{**path} 透传 NPM 上游，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存
 app.MapMethods("/npm/{**path}", ["GET", "HEAD"], (Delegate)npmHandler.HandleNpmRoute);
+
+// Docker registry 路由：主路由 /v2 系列 + 别名 /docker/v2 系列（同一 handler、同一缓存）。
+// 用 {**path} catch-all 一次性覆盖 /v2、/v2/、/v2/{path} 三种形态（catch-all 匹配空段，
+// 与 /maven/{**path} 注册方式一致），空路径由 handler 内识别为版本探测。全部 GET/HEAD
+app.MapMethods("/v2/{**path}", ["GET", "HEAD"], (Delegate)dockerHandler.HandleDockerRoute);
+app.MapMethods("/docker/v2/{**path}", ["GET", "HEAD"], (Delegate)dockerHandler.HandleDockerRoute);
 
 app.MapMethods("/", ["GET", "HEAD"], (HttpContext httpContext) =>
 {
