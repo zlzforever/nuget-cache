@@ -7,7 +7,7 @@
 - **NuGet 下载代理**: 代理 `/nuget/v3/index.json` 和 `/nuget/v3-flatcontainer/` 请求
 - **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游），支持**多上游按序回退**
 - **npm 代理**: `/npm/{**path}` 通配路由透传 npm registry（或自配上游），tarball 磁盘永久缓存、包元数据内存短 TTL 缓存
-- **docker registry 代理（pull-through）**: `/v2/{**path}` 主路由（Docker 客户端可直接对接）+ `/docker/v2/{**path}` 别名，manifest 分级缓存（digest 磁盘永久 + tag 内存 TTL）、blob 磁盘永久缓存，支持多上游按序回退，Docker Hub 匿名拉取开箱即用
+- **docker registry 代理（pull-through）**: `/v2/{**path}` 主路由（Docker 客户端可直接对接），manifest 分级缓存（digest 磁盘永久 + tag 内存 TTL）、blob 磁盘永久缓存，支持多上游按序回退，Docker Hub 匿名拉取开箱即用
 - **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball/`blob`/`manifest` 等产物文件缓存到本地磁盘，永久保存
 - **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒；docker tag manifest 默认 60 秒、digest manifest 内存 TTL 默认 3600 秒
 - **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL 与 npm tarball URL 重写为代理域名
@@ -38,7 +38,6 @@
 4. **`/maven/{**path}`** - Maven 上游代理，产物磁盘永久缓存，元数据内存缓存
 5. **`/npm/{**path}`** - npm 上游代理，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存（按 Accept 变体区分）
 6. **`/v2`、`/v2/{**path}`** - Docker Registry HTTP API V2 主路由（Docker 客户端可直接对接，registry-mirrors / docker pull 直连均可）；版本探测、manifest 分级缓存、blob 磁盘永久缓存、tags/list 透传
-7. **`/docker/v2/{**path}`** - Docker 别名路由，与 `/v2/{**path}` 等价（同一 Handler、同一缓存，与 `/nuget/` `/maven/` `/npm/` 前缀风格统一）
 
 ## 环境变量
 
@@ -123,9 +122,6 @@ http://localhost:5212/v2/library/nginx/blobs/sha256:...
 
 # Docker tags/list（内存短 TTL）
 http://localhost:5212/v2/library/nginx/tags/list
-
-# Docker 别名路由（与 /v2/ 等价）
-http://localhost:5212/docker/v2/library/nginx/manifests/latest
 
 # HEAD（Content-Length 与 GET 一致，无响应体）
 curl -sI http://localhost:5212/nuget/v3/index.json

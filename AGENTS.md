@@ -160,9 +160,8 @@ using var response = await httpClient.GetAsync(url);
 7. `GET|HEAD /v2/{name}/manifests/{reference}` - Docker manifest: by-digest → disk permanent + memory TTL; by-tag → memory TTL only (`Docker-Content-Digest` backfilled)
 8. `GET|HEAD /v2/{name}/blobs/{digest}` - Docker blob, disk permanent cache (streaming sha256 verify if `DOCKER_BLOB_VERIFY`)
 9. `GET|HEAD /v2/{name}/tags/list` - Docker tag list, memory short TTL
-10. `GET|HEAD /docker/v2/{**path}` - Docker alias route, equivalent to `/v2/{**path}` (same handler, same cache)
-11. `GET|HEAD /` - Health check
-12. `GET|HEAD /*` (fallback) - Returns 404 with logging
+10. `GET|HEAD /` - Health check
+11. `GET|HEAD /*` (fallback) - Returns 404 with logging
 
 ### Docker 代理注意事项
 
