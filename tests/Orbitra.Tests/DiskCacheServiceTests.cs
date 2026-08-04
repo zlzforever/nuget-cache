@@ -356,6 +356,64 @@ public sealed class DiskCacheServiceTests
             r => r.GetHeader("Authorization")?.StartsWith("Bearer tok-abc") == true));
     }
 
+    [Fact]
+    public async Task Download_401Retry_DropsClientAuthorizationHeader()
+    {
+        // 客户端携带原始凭据访问私有仓库：401 重试仅携带 Bearer token，绝不重复携带客户端原始 Authorization
+        const string clientAuthorization = "Basic dXNlcjpwYXNz";
+        var (service, upstream, cachePath) = Create(
+            "http://up1.local",
+            request =>
+            {
+                if (request.RequestUri!.Host == "auth.local")
+                {
+                    return Task.FromResult(FakeResponses.Json("""{"token":"tok-abc","expires_in":300}"""));
+                }
+
+                if (request.Headers.Authorization?.ToString().StartsWith("Bearer ", StringComparison.Ordinal) == true)
+                {
+                    return Task.FromResult(FakeResponses.Bytes(BlobContent));
+                }
+
+                return Task.FromResult(FakeResponses.BearerChallenge401(
+                    "https://auth.local/token", "reg", "repository:library/nginx:pull"));
+            });
+
+        var requestHeaders = new Dictionary<string, string> { ["Authorization"] = clientAuthorization };
+        var tokenProvider = async (string url, string wwwAuthenticate) =>
+        {
+            DockerTokenService.TryParseBearerChallenge(
+                wwwAuthenticate, out var realm, out var serviceName, out var scope);
+            var tokenService = new DockerTokenService(
+                new FakeHttpClientFactory(upstream),
+                new MemoryCache(new MemoryCacheOptions()),
+                NullLogger<DockerTokenService>.Instance);
+            return await tokenService.GetBearerTokenAsync(realm, serviceName, scope, clientAuthorization);
+        };
+
+        var result = await service.DownloadToCacheAsync(
+            "Docker", SingleBlobUrls(BlobDigest), CacheFile(cachePath, BlobDigest),
+            "application/octet-stream", CancellationToken.None,
+            requestHeaders: requestHeaders,
+            unauthorizedTokenProvider: tokenProvider,
+            unauthorizedChallenge: "Basic realm=\"Orbitra\"");
+
+        Assert.NotNull(result);
+        Assert.True(File.Exists(CacheFile(cachePath, BlobDigest)));
+        // 首次 401（携带客户端 Basic）+ 带 Bearer 重试 = 2 次 blob 请求，1 次 token 请求
+        Assert.Equal(2, upstream.CountRequests(r => r.Url.Contains("blobs/")));
+        Assert.Equal(1, upstream.CountRequests(r => r.Url.Contains("auth.local")));
+        // 初始请求透传客户端原始 Basic 凭据（仅此一路）
+        Assert.Equal(1, upstream.CountRequests(
+            r => r.Url.Contains("blobs/") && r.GetHeader("Authorization") == clientAuthorization));
+        // 带 Bearer 的重试请求只含一路 Authorization，绝不叠加客户端原始 Basic 凭据
+        var retries = upstream.Requests.Where(r =>
+            r.Url.Contains("blobs/") &&
+            r.GetHeader("Authorization")?.StartsWith("Bearer tok-abc", StringComparison.Ordinal) == true);
+        Assert.Single(retries);
+        Assert.All(retries, r => Assert.DoesNotContain(clientAuthorization, r.GetHeader("Authorization")));
+    }
+
     /// <summary>执行 IResult 并读取状态码。</summary>
     private static async Task<(int Status, Microsoft.AspNetCore.Http.IHeaderDictionary Headers)> ExecuteResultAsync(
         Microsoft.AspNetCore.Http.IResult result)

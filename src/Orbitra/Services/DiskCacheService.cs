@@ -125,7 +125,9 @@ public sealed class DiskCacheService
                         continue;
                     }
 
-                    using var retryRequest = BuildRequest(HttpMethod.Get, targetUrl, requestHeaders);
+                    // 重试请求丢弃客户端原始 Authorization（避免与 Bearer token 两路叠加导致上游歧义），
+                    // 仅附交换成功的 Bearer token，与 DockerProxyHandler.SendSingleAsync 重试语义一致
+                    using var retryRequest = BuildRequest(HttpMethod.Get, targetUrl, StripAuthorizationHeader(requestHeaders));
                     retryRequest.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
                     response = await httpClient.SendAsync(
                         retryRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -270,6 +272,35 @@ public sealed class DiskCacheService
         }
 
         return request;
+    }
+
+    /// <summary>
+    /// 返回去除 Authorization 键后的请求头集合：供 401 重试请求使用（统一改用 Bearer token 头，
+    /// 避免与客户端原始 Authorization 头重复携带触发上游歧义）；无 Authorization 或为空时原样返回。
+    /// </summary>
+    /// <param name="requestHeaders">原始请求头集合（可为 null）。</param>
+    /// <returns>去除 Authorization 后的请求头集合（原集合为 null 时返回 null）。</returns>
+    private static IReadOnlyDictionary<string, string>? StripAuthorizationHeader(
+        IReadOnlyDictionary<string, string>? requestHeaders)
+    {
+        if (requestHeaders is null)
+        {
+            return null;
+        }
+
+        Dictionary<string, string>? filtered = null;
+        foreach (var (headerName, headerValue) in requestHeaders)
+        {
+            if (string.Equals(headerName, "Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            filtered ??= new Dictionary<string, string>();
+            filtered[headerName] = headerValue;
+        }
+
+        return filtered;
     }
 
     /// <summary>

@@ -258,7 +258,8 @@ public sealed class DockerProxyHandler
 
     /// <summary>
     /// 处理 by-tag manifest（GET/HEAD）：仅内存短 TTL 缓存（<c>DOCKER_TAG_TTL</c>，不落盘），
-    /// 返回时回填 <c>Docker-Content-Digest</c>（取上游头，缺失则按响应体 sha256 回算）。
+    /// 返回时按响应体 sha256 回填 <c>Docker-Content-Digest</c>（格式 <c>sha256:{hex}</c>，
+    /// 与 by-digest 路径一致，客户端据此校验 manifest 内容）。
     /// HEAD 未命中时仅透传上游 HEAD，不触发 GET。
     /// </summary>
     /// <param name="name">仓库名。</param>
@@ -304,9 +305,10 @@ public sealed class DockerProxyHandler
             return BuildUpstreamFailureResult(lastStatusCode, httpContext);
         }
 
-        // 回填 Docker-Content-Digest：优先取上游头，缺失按响应体 sha256 回算
+        // 回填 Docker-Content-Digest：恒按响应体 sha256 回算（by-tag 不透传上游头，防伪造 digest 干扰客户端校验），
+        // 格式统一为 sha256:{hex}，与 by-digest 路径（:579）及缓存回放路径完全一致
         var effectiveContentType = contentType ?? DefaultManifestContentType;
-        var digest = ComputeDigest(body);
+        var digest = $"sha256:{ComputeDigest(body)}";
         _cache.Set(memoryKey, new ManifestCacheValue(body, effectiveContentType, digest),
             TimeSpan.FromSeconds(_options.DockerTagTtlSeconds));
         _logger.LogInformation("Docker tag manifest cached ({Ttl}s): {Name}:{Tag}",
@@ -416,7 +418,12 @@ public sealed class DockerProxyHandler
             return Results.BadRequest();
         }
 
-        var memoryKey = $"{TagsListCacheKeyPrefix}{name}";
+        // 缓存 key 并入归一化 query（至少 n/last 分页参数）：同一 repo 不同分页页互不串扰；
+        // 无 query 时 key 行为与旧版一致（仅 prefix+name）
+        var queryKey = NormalizeTagsListQuery(httpContext.Request.Query);
+        var memoryKey = queryKey is null
+            ? $"{TagsListCacheKeyPrefix}{name}"
+            : $"{TagsListCacheKeyPrefix}{name}?{queryKey}";
         if (_cache.TryGetValue(memoryKey, out TagsListCacheValue? cached) && cached != null)
         {
             if (!string.IsNullOrWhiteSpace(cached.Link))
@@ -811,6 +818,30 @@ public sealed class DockerProxyHandler
             _logger.LogWarning(ex, "Docker manifest meta read failed (UnauthorizedAccess): {File}", metaFile);
             return null;
         }
+    }
+
+    /// <summary>
+    /// 将 tags/list 查询参数归一化为缓存 key 后缀：参数按名称排序、多值以逗号拼接，
+    /// 使 <c>?n=10&amp;last=xxx</c> 与 <c>?last=xxx&amp;n=10</c> 命中同一缓存，
+    /// 而不同分页（n/last 取值不同）互不串扰；无查询参数时返回 null。
+    /// </summary>
+    /// <param name="query">当前请求的查询参数集合。</param>
+    /// <returns>归一化后的查询 key（无参数返回 null）。</returns>
+    private static string? NormalizeTagsListQuery(IQueryCollection query)
+    {
+        if (query.Count == 0)
+        {
+            return null;
+        }
+
+        var parts = new List<string>(query.Count);
+        foreach (var key in query.Keys.OrderBy(key => key, StringComparer.Ordinal))
+        {
+            var values = string.Join(",", query[key].Select(value => value ?? string.Empty));
+            parts.Add($"{key}={values}");
+        }
+
+        return string.Join("&", parts);
     }
 
     /// <summary>

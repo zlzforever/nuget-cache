@@ -239,10 +239,9 @@ public sealed class DockerProxyHandlerTests
 
         Assert.Equal(200, first.Status);
         Assert.Equal(ManifestContent, first.Body);
-        // by-tag 无上游 Docker-Content-Digest 头时按响应体 sha256 回填
-        // （当前实现为纯 hex，无 sha256: 前缀）
+        // by-tag 无上游 Docker-Content-Digest 头时按响应体 sha256 回填，格式为 sha256:{hex}（与 by-digest 一致）
         Assert.Equal(
-            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ManifestContent)).ToLowerInvariant(),
+            "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ManifestContent)).ToLowerInvariant(),
             first.Headers["Docker-Content-Digest"].ToString());
         Assert.Equal("application/vnd.oci.image.manifest.v1+json", first.Headers.ContentType.ToString());
         Assert.Equal(1, harness.Upstream.CountRequests(_ => true));
@@ -269,9 +268,9 @@ public sealed class DockerProxyHandlerTests
             (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/manifests/latest", ctx, ct));
 
         Assert.Equal(200, status);
-        // by-tag 回填的 Docker-Content-Digest 为响应体 sha256（当前实现为纯 hex，无 sha256: 前缀）
+        // by-tag 恒按响应体 sha256 回填（忽略上游伪造的 Docker-Content-Digest 头），格式为 sha256:{hex}
         Assert.Equal(
-            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ManifestContent)).ToLowerInvariant(),
+            "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(ManifestContent)).ToLowerInvariant(),
             headers["Docker-Content-Digest"].ToString());
     }
 
@@ -437,8 +436,75 @@ public sealed class DockerProxyHandlerTests
         Assert.Equal(1, harness.Upstream.CountRequests(_ => true));
 
         var second = await HttpTestHelper.ExecuteAsync(
-            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct));
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?n=10");
         Assert.Equal(200, second.Status);
+        Assert.Equal(1, harness.Upstream.CountRequests(_ => true));
+    }
+
+    [Fact]
+    public async Task TagsList_DifferentPaginationQuery_DoesNotShareCacheEntry()
+    {
+        using var harness = DockerTestHarness.Create(
+            "http://up1.local",
+            request =>
+            {
+                // 第二页（带 last 游标）返回不同的 tag 集合，验证分页互不串页
+                if (request.RequestUri!.Query.Contains("last=latest"))
+                {
+                    return Task.FromResult(FakeResponses.Json(
+                        """{"name":"library/nginx","tags":["2.0"]}""", "application/json"));
+                }
+
+                return Task.FromResult(FakeResponses.Json(
+                    """{"name":"library/nginx","tags":["latest","1.0"]}""", "application/json"));
+            });
+
+        // 第一页 ?n=10：写入缓存（key 含归一化 query）
+        var page1 = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?n=10");
+        Assert.Equal(200, page1.Status);
+        Assert.Contains("latest", HttpTestHelper.DecodeBody(page1.Body));
+        Assert.Equal(1, harness.Upstream.CountRequests(_ => true));
+
+        // 第二页 ?n=10&last=latest：query 不同 → 独立缓存 key，重新命中上游，返回正确页
+        var page2 = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?n=10&last=latest");
+        Assert.Equal(200, page2.Status);
+        Assert.Contains("2.0", HttpTestHelper.DecodeBody(page2.Body));
+        Assert.DoesNotContain("latest", HttpTestHelper.DecodeBody(page2.Body));
+        Assert.Equal(2, harness.Upstream.CountRequests(_ => true));
+
+        // 再次请求第一页：命中第一页缓存，不触碰上游，也不返回第二页内容
+        var page1Again = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?n=10");
+        Assert.Equal(200, page1Again.Status);
+        Assert.Contains("latest", HttpTestHelper.DecodeBody(page1Again.Body));
+        Assert.DoesNotContain("2.0", HttpTestHelper.DecodeBody(page1Again.Body));
+        Assert.Equal(2, harness.Upstream.CountRequests(_ => true));
+    }
+
+    [Fact]
+    public async Task TagsList_QueryParamOrderNormalized_SharedCache()
+    {
+        using var harness = DockerTestHarness.Create(
+            "http://up1.local",
+            _ => Task.FromResult(FakeResponses.Json(
+                """{"name":"library/nginx","tags":["latest","1.0"]}""", "application/json")));
+
+        var first = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?n=10&last=latest");
+        var second = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandleDockerRoute("library/nginx/tags/list", ctx, ct),
+            queryString: "?last=latest&n=10");
+
+        Assert.Equal(200, first.Status);
+        Assert.Equal(200, second.Status);
+        // 参数顺序不同但归一化 key 相同 → 命中同一缓存条目，不触碰上游
         Assert.Equal(1, harness.Upstream.CountRequests(_ => true));
     }
 
