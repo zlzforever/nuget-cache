@@ -15,7 +15,7 @@ public sealed class DockerPathParserTests
     [Fact]
     public void Parse_EmptyOrNull_ReturnsVersionProbe()
     {
-        // /v2、/v2/、/docker/v2、/docker/v2/ 的 {**path} 捕获值均为空，
+        // /v2、/v2/ 的 {**path} 捕获值均为空，
         // 路由后由处理器判空触发版本探测
         Assert.Equal(DockerEndpointKind.VersionProbe, DockerPathParser.Parse("").Kind);
         Assert.Equal(DockerEndpointKind.VersionProbe, DockerPathParser.Parse(string.Empty).Kind);

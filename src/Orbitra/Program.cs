@@ -107,11 +107,10 @@ app.MapMethods("/maven/{**path}", ["GET", "HEAD"], (Delegate)mavenHandler.Handle
 // npm 通配路由：{**path} 透传 NPM 上游，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存
 app.MapMethods("/npm/{**path}", ["GET", "HEAD"], (Delegate)npmHandler.HandleNpmRoute);
 
-// Docker registry 路由：主路由 /v2 系列 + 别名 /docker/v2 系列（同一 handler、同一缓存）。
+// Docker registry 路由：主路由 /v2 系列（Docker Registry V2 协议必需）。
 // 用 {**path} catch-all 一次性覆盖 /v2、/v2/、/v2/{path} 三种形态（catch-all 匹配空段，
 // 与 /maven/{**path} 注册方式一致），空路径由 handler 内识别为版本探测。全部 GET/HEAD
 app.MapMethods("/v2/{**path}", ["GET", "HEAD"], (Delegate)dockerHandler.HandleDockerRoute);
-app.MapMethods("/docker/v2/{**path}", ["GET", "HEAD"], (Delegate)dockerHandler.HandleDockerRoute);
 
 app.MapMethods("/", ["GET", "HEAD"], (HttpContext httpContext) =>
 {

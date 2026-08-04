@@ -7,8 +7,8 @@ using Orbitra.Services;
 namespace Orbitra.Handlers;
 
 /// <summary>
-/// docker registry 代理请求处理器：承载 <c>/v2/{**path}</c> 主路由与 <c>/docker/v2/{**path}</c> 别名路由
-/// （均支持 GET/HEAD）。按 <see cref="DockerPathParser"/> 解析分发到四个端点：
+/// docker registry 代理请求处理器：承载 <c>/v2/{**path}</c> 主路由（支持 GET/HEAD）。
+/// 按 <see cref="DockerPathParser"/> 解析分发到四个端点：
 /// 版本探测（<c>/v2</c>/<c>/v2/</c>，回 <c>{}</c> + Docker-Distribution-Api-Version）、
 /// blob（按 sha256 digest 磁盘永久缓存，复用 <see cref="DiskCacheService"/>）、
 /// manifest（by-digest 磁盘永久 + 内存 TTL + .meta 侧车记录 Content-Type；by-tag 仅内存 TTL）、
@@ -82,7 +82,7 @@ public sealed class DockerProxyHandler
     }
 
     /// <summary>
-    /// 处理 GET/HEAD /v2/{**path} 与 /docker/v2/{**path} 通配路由：空路径 → 版本探测；
+    /// 处理 GET/HEAD /v2/{**path} 通配路由：空路径 → 版本探测；
     /// 否则按 <see cref="DockerPathParser"/> 分发到 manifest / blob / tags list。
     /// </summary>
     /// <param name="path">通配路由路径段（可为 null/空串，表示版本探测）。</param>
