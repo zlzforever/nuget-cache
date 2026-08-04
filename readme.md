@@ -1,14 +1,15 @@
 # Orbitra
 
-高性能多仓库包缓存代理（当前 NuGet + Maven + npm，规划 docker/pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
+高性能多仓库包缓存代理（当前 NuGet + Maven + npm + docker registry，规划 pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
 
 ## 功能特性
 
 - **NuGet 下载代理**: 代理 `/nuget/v3/index.json` 和 `/nuget/v3-flatcontainer/` 请求
 - **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游），支持**多上游按序回退**
 - **npm 代理**: `/npm/{**path}` 通配路由透传 npm registry（或自配上游），tarball 磁盘永久缓存、包元数据内存短 TTL 缓存
-- **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball 等产物文件缓存到本地磁盘，永久保存
-- **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒
+- **docker registry 代理（pull-through）**: `/v2/{**path}` 主路由（Docker 客户端可直接对接）+ `/docker/v2/{**path}` 别名，manifest 分级缓存（digest 磁盘永久 + tag 内存 TTL）、blob 磁盘永久缓存，支持多上游按序回退，Docker Hub 匿名拉取开箱即用
+- **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball/`blob`/`manifest` 等产物文件缓存到本地磁盘，永久保存
+- **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒；docker tag manifest 默认 60 秒、digest manifest 内存 TTL 默认 3600 秒
 - **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL 与 npm tarball URL 重写为代理域名
 - **HEAD 支持**: 全部数据路由支持 `HEAD`（Content-Length 与 GET 一致，无响应体）
 - **高并发**: 支持最大 5000 并发连接
@@ -18,10 +19,10 @@
 ## 实现逻辑
 
 ```
-┌──────────────────┐     ┌─────────────────┐     ┌────────────────────────────┐
-│ NuGet/Maven/npm  │────▶│     Orbitra     │────▶│  nuget.org / Maven Central │
-│     Client       │     │    (代理服务)     │     │      / npm registry       │
-└──────────────────┘     └─────────────────┘     └────────────────────────────┘
+┌─────────────────────┐     ┌─────────────────┐     ┌───────────────────────────────┐
+│ NuGet/Maven/npm/    │────▶│     Orbitra     │────▶│ nuget.org / Maven Central /   │
+│   docker 客户端       │     │    (代理服务)     │     │  npm registry / Docker Hub    │
+└─────────────────────┘     └─────────────────┘     └───────────────────────────────┘
                                 │
                         ┌───────┴───────┐
                         ▼               ▼
@@ -36,16 +37,23 @@
 3. **`/nuget/v3-flatcontainer/{id}/{version}/{file}`** - 包文件下载，磁盘永久缓存
 4. **`/maven/{**path}`** - Maven 上游代理，产物磁盘永久缓存，元数据内存缓存
 5. **`/npm/{**path}`** - npm 上游代理，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存（按 Accept 变体区分）
+6. **`/v2`、`/v2/{**path}`** - Docker Registry HTTP API V2 主路由（Docker 客户端可直接对接，registry-mirrors / docker pull 直连均可）；版本探测、manifest 分级缓存、blob 磁盘永久缓存、tags/list 透传
+7. **`/docker/v2/{**path}`** - Docker 别名路由，与 `/v2/{**path}` 等价（同一 Handler、同一缓存，与 `/nuget/` `/maven/` `/npm/` 前缀风格统一）
 
 ## 环境变量
 
 | 变量             | 默认值           | 说明                                         |
 |----------------|---------------|--------------------------------------------|
 | `NUGET_PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/`。旧名 `PROXY_DOMAIN` 仍支持（已弃用，命中时输出警告日志） |
-| `CACHE_PATH`   | `cache` | NuGet/Maven/npm 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`） |
+| `CACHE_PATH`   | `cache` | NuGet/Maven/npm/docker 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`、`{CACHE_PATH}/docker/`） |
 | `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址。支持**逗号分隔多值**（如 `https://maven.aliyun.com/repository/central,https://repo.maven.apache.org/maven2`），顺序即失败回退顺序（网络异常或非 2xx 自动换下一个上游）；单值行为与旧版一致。注意：URL 内不得含逗号 |
 | `NPM_UPSTREAM_URL` | `https://registry.npmjs.org` | npm 上游地址（可切换国内镜像，如 `https://registry.npmmirror.com`） |
 | `NPM_METADATA_TTL` | `60` | npm 包元数据内存缓存 TTL（秒），缩写与全量变体分别缓存 |
+| `DOCKER_UPSTREAM_URL` | `https://registry-1.docker.io` | Docker registry 上游地址。支持**逗号分隔多值**，顺序即失败回退顺序（网络异常或非 2xx 自动换下一个上游）；URL 内不得含逗号 |
+| `DOCKER_TAG_TTL` | `60` | docker tag manifest / tags-list 内存缓存 TTL（秒） |
+| `DOCKER_MANIFEST_TTL` | `3600` | docker digest manifest 磁盘命中后的内存 TTL（秒），磁盘文件本身永久保留 |
+| `DOCKER_BLOB_VERIFY` | `true` | 拉取 blob 时是否流式计算 sha256 与请求 digest 比对，不符则删除并回退下一上游 |
+| `DOCKER_ENABLE_PUSH` | `false` | 是否启用 docker push 支持（v1 默认关闭，暂不支持上传链路） |
 
 ## 构建与运行
 
@@ -101,9 +109,28 @@ http://localhost:5212/npm/express
 # npm tarball（首次落盘，二次命中磁盘缓存）
 http://localhost:5212/npm/express/-/express-4.19.2.tgz
 
+# Docker 版本探测
+http://localhost:5212/v2/
+
+# Docker manifest（by-tag，内存 TTL）
+http://localhost:5212/v2/library/nginx/manifests/latest
+
+# Docker manifest（by-digest，磁盘永久缓存）
+http://localhost:5212/v2/library/nginx/manifests/sha256:...
+
+# Docker blob（磁盘永久缓存）
+http://localhost:5212/v2/library/nginx/blobs/sha256:...
+
+# Docker tags/list（内存短 TTL）
+http://localhost:5212/v2/library/nginx/tags/list
+
+# Docker 别名路由（与 /v2/ 等价）
+http://localhost:5212/docker/v2/library/nginx/manifests/latest
+
 # HEAD（Content-Length 与 GET 一致，无响应体）
 curl -sI http://localhost:5212/nuget/v3/index.json
 curl -sI http://localhost:5212/npm/express
+curl -sI http://localhost:5212/v2/library/nginx/manifests/latest
 ```
 
 ## 配置 NuGet 客户端
@@ -199,6 +226,59 @@ allprojects {
 }
 ```
 
+## 配置 Docker 客户端
+
+### 方式一：daemon.json `registry-mirrors`（推荐，镜像加速）
+
+修改 `/etc/docker/daemon.json`（或 macOS/Linux 对应位置），将 Orbitra 配置为 registry mirror：
+
+```json
+{
+  "registry-mirrors": ["http://localhost:18680"]
+}
+```
+
+配置后 `docker pull nginx` 会优先经过 Orbitra 代理拉取；若代理走 HTTP 且未配置 TLS，需在 `daemon.json` 同时加入 `"insecure-registries": ["localhost:18680"]`。
+
+### 方式二：containerd `hosts.toml`
+
+在 `/etc/containerd/certs.d/docker.io/hosts.toml` 中配置：
+
+```toml
+[host."http://localhost:18680"]
+  capabilities = ["pull", "resolve"]
+```
+
+### 方式三：直接作为 registry（docker login + 拉取）
+
+```bash
+# 登录（匿名拉取无需登录；登录仅用于私有仓库场景）
+docker login localhost:18680
+
+# 直接拉取
+docker pull localhost:18680/library/nginx
+```
+
+**镜像名说明**：Docker Hub 的标准镜像名（如 `nginx`）会由客户端自动规范为 `library/nginx` 再请求代理，`registry-mirrors` 与 containerd 方式均开箱即用；v1 暂不支持「镜像名带代理域名前缀」（如 `docker pull myproxy.example/nginx`）这种把代理当作独立 registry 使用的形态，请使用上面的 `registry-mirrors` / `hosts.toml` 方式。
+
+## Docker 鉴权说明
+
+代理内部自动完成上游 token 交换：上游返回 `401 + WWW-Authenticate: Bearer realm/service/scope` 时，代理按 `?service&scope` 向 realm 换取 Bearer token（未配置凭据则匿名换取，Docker Hub 公共镜像走此流程），缓存 token 后带 `Authorization: Bearer` 重试。**上游的 `WWW-Authenticate` 质询不会透传给客户端**；客户端无需任何配置即可匿名拉取 Docker Hub 公共镜像。
+
+## Docker 缓存策略
+
+| 对象 | 缓存策略 | 说明 |
+|---------|---------|------|
+| manifest（by-digest） | 磁盘永久 + 内存 TTL | 落盘 `{CACHE_PATH}/docker/manifests/sha256/{hex[:2]}/{hex}.json` + `.meta` sidecar（记录上游 Content-Type），磁盘命中时回放精确 media type；内存 TTL `DOCKER_MANIFEST_TTL`（默认 3600 秒） |
+| manifest（by-tag） | 仅内存 TTL | tag 可变不落盘；TTL `DOCKER_TAG_TTL`（默认 60 秒），返回时回填 `Docker-Content-Digest` |
+| tags/list | 内存短 TTL | 同 `DOCKER_TAG_TTL`（默认 60 秒） |
+| blob | 磁盘永久 | 内容寻址天然不可变；落盘 `{CACHE_PATH}/docker/blobs/sha256/{hex[:2]}/{hex}`，复用共享磁盘缓存链路（下载→流式落盘→原子 rename），`DOCKER_BLOB_VERIFY=true` 时边写边算 sha256 校验 |
+
+## Docker 已知限制（v1）
+
+- 无 blob 磁盘淘汰策略：镜像磁盘膨胀依赖运维层卷容量管理（与 NuGet/Maven/npm 一致的永久缓存模型）
+- 不支持 push：`DOCKER_ENABLE_PUSH` 默认 `false`，上传链路（PUT manifest / POST-PATCH-PUT blob）不在 v1 范围
+
 ## 缓存目录结构
 
 ```
@@ -215,10 +295,20 @@ cache/                                  # {CACHE_PATH} 默认根目录
 │           ├── spring-core-6.1.0.jar
 │           ├── spring-core-6.1.0.jar.sha1
 │           └── ...
-└── npm/                                # npm 独立子目录
-    └── express/
-        └── -/
-            └── express-4.19.2.tgz
+├── npm/                                # npm 独立子目录
+│   └── express/
+│       └── -/
+│           └── express-4.19.2.tgz
+└── docker/                             # Docker registry 独立子目录
+    ├── blobs/                          # blob 按算法 + digest 前两位分片，避免目录爆炸
+    │   └── sha256/
+    │       └── 3b/                     # {hex[:2]} 256 个子目录
+    │           └── 3b2e...8f2a         # 完整 hex 摘要作为文件名（无扩展名）
+    └── manifests/                      # digest manifest
+        └── sha256/
+            └── 3b/
+                ├── 3b2e...8f2a.json    # digest manifest body
+                └── 3b2e...8f2a.json.meta  # Content-Type sidecar
 ```
 
 > **旧缓存懒迁移**：老版本 NuGet 包文件落在 `{CACHE_PATH}/{id}/{version}/`（无 `nuget/` 子目录）。
