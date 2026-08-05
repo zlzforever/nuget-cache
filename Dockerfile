@@ -2,9 +2,8 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN dotnet restore
-COPY . .
-RUN dotnet publish -c Release -o /app/publish
+RUN dotnet restore src/Orbitra/Orbitra.csproj
+RUN dotnet publish src/Orbitra/Orbitra.csproj -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
 WORKDIR /app
