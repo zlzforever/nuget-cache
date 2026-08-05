@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <IsPublishable>false</IsPublishable>
     <IsTestProject>true</IsTestProject>
     <!-- 测试工程不发布 AOT，但生产代码（Orbitra）的 AOT 兼容约束仍然生效 -->
   </PropertyGroup>
