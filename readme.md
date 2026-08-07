@@ -1,16 +1,17 @@
 # Orbitra
 
-高性能多仓库包缓存代理（当前 NuGet + Maven + npm + docker registry，规划 pip），基于 ASP.NET Core Minimal API 和 AOT 编译。
+高性能多仓库包缓存代理（当前 NuGet + Maven + npm + pip + docker registry），基于 ASP.NET Core Minimal API 和 AOT 编译。
 
 ## 功能特性
 
 - **NuGet 下载代理**: 代理 `/nuget/v3/index.json` 和 `/nuget/v3-flatcontainer/` 请求
 - **Maven 缓存代理**: `/maven/{**path}` 通配路由 1:1 透传 Maven Central（或自配上游），支持**多上游按序回退**
 - **npm 代理**: `/npm/{**path}` 通配路由透传 npm registry（或自配上游），tarball 磁盘永久缓存、包元数据内存短 TTL 缓存
+- **pip 代理**: `/pip/{**path}` 通配路由透传 PyPI Simple API（或自配镜像，PEP 503/691/658/714 对齐），simple 项目页内存短 TTL 缓存（按 Accept 变体分 key）、文件磁盘永久缓存
 - **docker registry 代理（pull-through）**: `/v2/{**path}` 主路由（Docker 客户端可直接对接），manifest 分级缓存（digest 磁盘永久 + tag 内存 TTL）、blob 磁盘永久缓存，支持多上游按序回退，Docker Hub 匿名拉取开箱即用
-- **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball/`blob`/`manifest` 等产物文件缓存到本地磁盘，永久保存
-- **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒；docker tag manifest 默认 60 秒、digest manifest 内存 TTL 默认 3600 秒
-- **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL 与 npm tarball URL 重写为代理域名
+- **磁盘缓存**: `.nupkg`/`.jar`/`.pom`/tarball/wheel/`sdist`/`blob`/`manifest` 等产物文件缓存到本地磁盘，永久保存
+- **内存缓存**: NuGet `index.json` 缓存 60 分钟；`maven-metadata.xml` 缓存（快照 5 分钟 / 非快照 60 分钟）；npm 包元数据默认缓存 60 秒；pip simple 项目页默认缓存 600 秒（HTML/JSON 变体分离）；docker tag manifest 默认 60 秒、digest manifest 内存 TTL 默认 3600 秒
+- **自动替换**: 自动将上游响应中的 `v3-flatcontainer` URL、npm tarball URL 与 pip 文件 URL 重写为代理域名
 - **HEAD 支持**: 全部数据路由支持 `HEAD`（Content-Length 与 GET 一致，无响应体）
 - **高并发**: 支持最大 5000 并发连接
 - **详细日志**: 记录缓存命中、下载耗时等信息
@@ -21,7 +22,7 @@
 ```
 ┌─────────────────────┐     ┌─────────────────┐     ┌───────────────────────────────┐
 │ NuGet/Maven/npm/    │────▶│     Orbitra     │────▶│ nuget.org / Maven Central /   │
-│   docker 客户端       │     │    (代理服务)     │     │  npm registry / Docker Hub    │
+│   pip/docker 客户端   │     │    (代理服务)     │     │  npm registry / PyPI / Docker │
 └─────────────────────┘     └─────────────────┘     └───────────────────────────────┘
                                 │
                         ┌───────┴───────┐
@@ -37,17 +38,20 @@
 3. **`/nuget/v3-flatcontainer/{id}/{version}/{file}`** - 包文件下载，磁盘永久缓存
 4. **`/maven/{**path}`** - Maven 上游代理，产物磁盘永久缓存，元数据内存缓存
 5. **`/npm/{**path}`** - npm 上游代理，tarball 磁盘永久缓存，包元数据内存短 TTL 缓存（按 Accept 变体区分）
-6. **`/v2`、`/v2/{**path}`** - Docker Registry HTTP API V2 主路由（Docker 客户端可直接对接，registry-mirrors / docker pull 直连均可）；版本探测、manifest 分级缓存、blob 磁盘永久缓存、tags/list 透传
+6. **`/pip/{**path}`** - PyPI Simple 代理：`/pip/simple/{name}/` 项目页内存短 TTL 缓存（按 Accept 变体区分，内嵌文件 URL 自动重写为 `{domain}/pip/files/`）、`/pip/simple/` 索引根透传、`/pip/files/{**path}` 文件磁盘永久缓存
+7. **`/v2`、`/v2/{**path}`** - Docker Registry HTTP API V2 主路由（Docker 客户端可直接对接，registry-mirrors / docker pull 直连均可）；版本探测、manifest 分级缓存、blob 磁盘永久缓存、tags/list 透传
 
 ## 环境变量
 
 | 变量             | 默认值           | 说明                                         |
 |----------------|---------------|--------------------------------------------|
 | `NUGET_PROXY_DOMAIN` | (必填)          | 代理服务的外部访问域名，如 `https://nuget.example.com/`。旧名 `PROXY_DOMAIN` 仍支持（已弃用，命中时输出警告日志） |
-| `CACHE_PATH`   | `cache` | NuGet/Maven/npm/docker 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`、`{CACHE_PATH}/docker/`） |
+| `CACHE_PATH`   | `cache` | NuGet/Maven/npm/pip/docker 共用的磁盘缓存根目录（各仓库落在 `{CACHE_PATH}/nuget/`、`{CACHE_PATH}/maven/`、`{CACHE_PATH}/npm/`、`{CACHE_PATH}/pip/`、`{CACHE_PATH}/docker/`） |
 | `MAVEN_UPSTREAM_URL` | `https://repo.maven.apache.org/maven2` | Maven 上游地址。支持**逗号分隔多值**（如 `https://maven.aliyun.com/repository/central,https://repo.maven.apache.org/maven2`），顺序即失败回退顺序（网络异常或非 2xx 自动换下一个上游）；单值行为与旧版一致。注意：URL 内不得含逗号 |
 | `NPM_UPSTREAM_URL` | `https://registry.npmjs.org` | npm 上游地址（可切换国内镜像，如 `https://registry.npmmirror.com`） |
 | `NPM_METADATA_TTL` | `60` | npm 包元数据内存缓存 TTL（秒），缩写与全量变体分别缓存 |
+| `PIP_UPSTREAM_URL` | `https://pypi.org/simple` | pip 上游索引基址（含 `/simple`，可切换国内镜像如 `https://pypi.tuna.tsinghua.edu.cn/simple`）。单上游；**含 userinfo（`user:pass@`）时启动即抛异常**（凭据不进日志，私有源 Basic 鉴权本期不支持） |
+| `PIP_SIMPLE_TTL` | `600` | pip simple 项目页内存缓存 TTL（秒），HTML 与 PEP 691 JSON 变体分别缓存 |
 | `DOCKER_UPSTREAM_URL` | `https://registry-1.docker.io` | Docker registry 上游地址。支持**逗号分隔多值**，顺序即失败回退顺序（网络异常或非 2xx 自动换下一个上游）；URL 内不得含逗号 |
 | `DOCKER_TAG_TTL` | `60` | docker tag manifest / tags-list 内存缓存 TTL（秒） |
 | `DOCKER_MANIFEST_TTL` | `3600` | docker digest manifest 磁盘命中后的内存 TTL（秒），磁盘文件本身永久保留 |
@@ -108,6 +112,15 @@ http://localhost:5212/npm/express
 # npm tarball（首次落盘，二次命中磁盘缓存）
 http://localhost:5212/npm/express/-/express-4.19.2.tgz
 
+# pip simple 项目页（文件 URL 自动重写为 {domain}/pip/files/，内存缓存 600 秒）
+http://localhost:5212/pip/simple/requests/
+
+# pip PEP 691 JSON 变体（Accept 头协商）
+curl -H "Accept: application/vnd.pypi.simple.v1+json" http://localhost:5212/pip/simple/requests/
+
+# pip wheel 文件（首次落盘，二次命中磁盘缓存）
+http://localhost:5212/pip/files/packages/a8/57/requests-2.31.0-py3-none-any.whl
+
 # Docker 版本探测
 http://localhost:5212/v2/
 
@@ -164,6 +177,39 @@ registry=https://nuget-cdn.example.com/npm/
 也可请求 `/npm/@scope%2fname`（编码形式），代理会保持编码一致地拼接上游与落盘路径，
 且元数据中内嵌的 tarball URL（如 `https://registry.npmjs.org/@scope%2fname/-/name-1.0.0.tgz`）
 会原样重写为 `{domain}/npm/@scope%2fname/-/name-1.0.0.tgz`，保证客户端可回源下载。
+
+## 配置 pip / uv 客户端
+
+### pip（`pip.config` 或环境变量）
+
+```bash
+# 方式一：全局配置（推荐）
+pip config set global.index-url https://nuget-cdn.example.com/pip/simple/
+
+# 方式二：环境变量（CI / 容器）
+export PIP_INDEX_URL=https://nuget-cdn.example.com/pip/simple/
+
+# 验证安装（二次安装全部缓存命中，不再请求上游）
+pip install requests
+```
+
+### uv
+
+```bash
+# 单次命令
+uv add requests --index-url https://nuget-cdn.example.com/pip/simple/
+
+# 或环境变量
+export UV_INDEX_URL=https://nuget-cdn.example.com/pip/simple/
+```
+
+> **HTTP 部署注意**：pip 对 http 源默认拒绝，代理走 HTTP（无 TLS）时需加 `--trusted-host`（如 `pip install --trusted-host nuget-cdn.example.com requests`）；生产建议启用 TLS 后使用 https 地址，无需该参数。
+
+### 说明
+
+- 项目名按 **PEP 503** 规范化（`Django` 与 `django` 命中同一缓存），文件 URL 重写仅针对「配置上游主机 + 伴生文件主机（pypi.org → files.pythonhosted.org）」的绝对地址，其余主机 URL 原样保留（客户端直连上游文件主机，功能不破坏）
+- simple 项目页仅内存短 TTL 缓存（`PIP_SIMPLE_TTL`，不落盘），发布新版本后 TTL 内即可见；文件（wheel/sdist/`.metadata`）磁盘永久缓存
+- 上游响应中的 `#sha256=` 片段原样保留，哈希校验由 pip 客户端自身完成（代理无感知，见「Docker 鉴权说明」同思路的客户端侧职责划分）
 
 ## 配置 Maven 客户端
 
@@ -295,6 +341,12 @@ cache/                                  # {CACHE_PATH} 默认根目录
 │   └── express/
 │       └── -/
 │           └── express-4.19.2.tgz
+├── pip/                                # pip 独立子目录
+│   └── files/                          # wheel / sdist / .metadata 文件（路径与文件主机 URL 一致）
+│       └── packages/
+│           └── a8/
+│               └── 57/
+│                   └── requests-2.31.0-py3-none-any.whl
 └── docker/                             # Docker registry 独立子目录
     ├── blobs/                          # blob 按算法 + digest 前两位分片，避免目录爆炸
     │   └── sha256/
@@ -318,6 +370,18 @@ cache/                                  # {CACHE_PATH} 默认根目录
 | tarball（路径含 `/-/` 或以 `.tgz` 结尾） | 磁盘永久缓存 | 落盘到 `{CACHE_PATH}/npm/{path}`，复用共享磁盘缓存服务 |
 | 包元数据（`/{pkg}`、`/{pkg}/{version}`，含 scope 包） | 内存短 TTL 缓存 | 默认 60 秒（`NPM_METADATA_TTL` 可配），key 按 Accept 变体区分（缩写 `install-v1+json` vs 全量） |
 | `/-/ping`、`/-/v1/search` 等内部端点 | 不缓存 | 兜底透传上游响应 |
+
+## pip 缓存策略
+
+| 文件类型 | 缓存策略 | 说明 |
+|---------|---------|------|
+| simple 项目页（`/simple/{name}/`） | 内存短 TTL 缓存 | 默认 600 秒（`PIP_SIMPLE_TTL` 可配），key 按 Accept 变体区分（HTML / PEP 691 JSON），仅成功响应缓存、不落盘；项目名 PEP 503 规范化后参与 key 与上游请求 |
+| 文件（`/files/{**path}`，wheel/sdist/`.metadata`） | 磁盘永久缓存 | 落盘 `{CACHE_PATH}/pip/files/{path}`，复用共享磁盘缓存服务（下载→流式落盘→原子 rename），上游 URL 由文件主机基址拼接（pypi.org → `https://files.pythonhosted.org`，镜像与页面同主机） |
+| 索引根（`/simple/`） | 不缓存 | 全量项目列表体量大且客户端不依赖，兜底透传 |
+
+- pip 单上游（v1），`PIP_UPSTREAM_URL` 多镜像回退见 v2 规划；上游含 userinfo 启动即抛异常（凭据不进日志）
+- 代理侧不做文件哈希校验：simple 页 `#sha256=` 位于 URL 片段，HTTP 请求不携带，由 pip 客户端按索引页哈希自行校验（不符直接失败）
+- `HEAD` 与 `GET` 一致：项目页显式设置 Content-Length；文件磁盘命中走 SendFile 零拷贝
 
 ## Maven 缓存策略
 

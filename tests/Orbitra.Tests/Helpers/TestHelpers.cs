@@ -238,6 +238,26 @@ public static class HttpTestHelper
 public static class TestProxyOptionsFactory
 {
     /// <summary>
+    /// 构造 pip 专用配置：固定 NuGet 代理域名，指定缓存目录、pip 上游与 simple TTL。
+    /// </summary>
+    /// <param name="cachePath">磁盘缓存根目录。</param>
+    /// <param name="upstreamUrl">PIP_UPSTREAM_URL 原值。</param>
+    /// <param name="simpleTtl">PIP_SIMPLE_TTL 秒数（null 表示不设置）。</param>
+    /// <returns>校验并归一化后的配置对象。</returns>
+    public static ProxyOptions CreatePipOptions(
+        string cachePath,
+        string upstreamUrl,
+        string? simpleTtl = null)
+    {
+        using var scope = new EnvVarScope(
+            (ProxyOptions.NuGetProxyDomainVariable, "https://proxy.example.com"),
+            (ProxyOptions.CachePathVariable, cachePath),
+            (ProxyOptions.PipUpstreamUrlVariable, upstreamUrl),
+            (ProxyOptions.PipSimpleTtlVariable, simpleTtl));
+        return ProxyOptions.Load(NullLogger<ProxyOptions>.Instance);
+    }
+
+    /// <summary>
     /// 构造 docker 专用配置：固定 NuGet 代理域名，指定缓存目录与上游列表。
     /// </summary>
     /// <param name="cachePath">磁盘缓存根目录。</param>

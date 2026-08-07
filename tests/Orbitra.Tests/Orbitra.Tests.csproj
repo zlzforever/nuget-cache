@@ -20,4 +20,9 @@
     <ProjectReference Include="..\..\src\Orbitra\Orbitra.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 配置项读取进程级环境变量（EnvVarScope 变更），跨类并行执行会产生读取竞争，禁用集合并行 -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

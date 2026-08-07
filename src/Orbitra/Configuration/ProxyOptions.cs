@@ -1,14 +1,16 @@
 namespace Orbitra.Configuration;
 
 /// <summary>
-/// 代理服务配置：集中从环境变量读取并校验 NuGet/Maven/npm/docker 代理所需的全部配置项。
+/// 代理服务配置：集中从环境变量读取并校验 NuGet/Maven/npm/docker/pip 代理所需的全部配置项。
 /// 提供 <c>NUGET_PROXY_DOMAIN</c>（新名）与 <c>PROXY_DOMAIN</c>（旧名，已弃用）的双读兼容，
 /// 优先读取新名，未设置时回退旧名并输出弃用警告日志；两者皆缺或非法时启动即抛异常。
-/// <c>CACHE_PATH</c> 为 NuGet/Maven/npm/docker 共用磁盘缓存根目录，保持原名不带前缀；
-/// 各仓库在根目录下按 <c>nuget/</c>、<c>maven/</c>、<c>npm/</c>、<c>docker/</c> 子目录隔离。
+/// <c>CACHE_PATH</c> 为 NuGet/Maven/npm/pip/docker 共用磁盘缓存根目录，保持原名不带前缀；
+/// 各仓库在根目录下按 <c>nuget/</c>、<c>maven/</c>、<c>npm/</c>、<c>pip/</c>、<c>docker/</c> 子目录隔离。
 /// <c>MAVEN_UPSTREAM_URL</c> 与 <c>DOCKER_UPSTREAM_URL</c> 均支持逗号分隔多值
 /// （<c>https://a/,https://b/,https://c/</c>），顺序即失败回退顺序，拆分/校验/归一化逻辑一致；
 /// npm 新增 <c>NPM_UPSTREAM_URL</c> 与 <c>NPM_METADATA_TTL</c>；
+/// pip 新增 <c>PIP_UPSTREAM_URL</c>（单上游，含 userinfo 启动即抛异常，避免凭据进日志）与
+/// <c>PIP_SIMPLE_TTL</c>，并派生「伴生文件主机」（上游为 pypi.org 时自动映射 files.pythonhosted.org）；
 /// docker 新增 <c>DOCKER_TAG_TTL</c>、<c>DOCKER_MANIFEST_TTL</c>、<c>DOCKER_BLOB_VERIFY</c>、<c>DOCKER_ENABLE_PUSH</c>。
 /// </summary>
 public sealed class ProxyOptions
@@ -19,7 +21,7 @@ public sealed class ProxyOptions
     /// <summary>NuGet 代理服务外部访问域名环境变量名（旧命名，已弃用，用于向后兼容回退）。</summary>
     public const string LegacyProxyDomainVariable = "PROXY_DOMAIN";
 
-    /// <summary>NuGet/Maven/npm 共用的磁盘缓存根目录环境变量名。</summary>
+    /// <summary>NuGet/Maven/npm/pip/docker 共用的磁盘缓存根目录环境变量名。</summary>
     public const string CachePathVariable = "CACHE_PATH";
 
     /// <summary>Maven 上游地址环境变量名。</summary>
@@ -30,6 +32,12 @@ public sealed class ProxyOptions
 
     /// <summary>npm 包元数据内存缓存 TTL（秒）环境变量名。</summary>
     public const string NpmMetadataTtlVariable = "NPM_METADATA_TTL";
+
+    /// <summary>pip 上游索引基址环境变量名。</summary>
+    public const string PipUpstreamUrlVariable = "PIP_UPSTREAM_URL";
+
+    /// <summary>pip simple 项目页内存缓存 TTL（秒）环境变量名。</summary>
+    public const string PipSimpleTtlVariable = "PIP_SIMPLE_TTL";
 
     /// <summary>docker 上游地址环境变量名。</summary>
     public const string DockerUpstreamUrlVariable = "DOCKER_UPSTREAM_URL";
@@ -55,6 +63,15 @@ public sealed class ProxyOptions
     /// <summary>npm 包元数据内存缓存默认 TTL（秒）。</summary>
     public const int DefaultNpmMetadataTtlSeconds = 60;
 
+    /// <summary>pip 上游默认索引基址（PyPI Simple API）。</summary>
+    public const string DefaultPipUpstreamUrl = "https://pypi.org/simple";
+
+    /// <summary>pip 上游为 pypi.org 时对应的伴生文件主机（wheel/sdist 等文件所在地）。</summary>
+    public const string DefaultPipCompanionHost = "files.pythonhosted.org";
+
+    /// <summary>pip simple 项目页内存缓存默认 TTL（秒），与 PyPI 自身缓存语义对齐。</summary>
+    public const int DefaultPipSimpleTtlSeconds = 600;
+
     /// <summary>docker 上游默认地址（Docker Hub registry-1）。</summary>
     public const string DefaultDockerUpstreamUrl = "https://registry-1.docker.io";
 
@@ -77,7 +94,7 @@ public sealed class ProxyOptions
     public Uri NuGetProxyDomain { get; }
 
     /// <summary>
-    /// NuGet/Maven/npm 共用的磁盘缓存根目录。为空时默认取应用基目录下的 <c>cache</c>。
+    /// NuGet/Maven/npm/pip/docker 共用的磁盘缓存根目录。为空时默认取应用基目录下的 <c>cache</c>。
     /// </summary>
     public string CachePath { get; }
 
@@ -102,6 +119,36 @@ public sealed class ProxyOptions
     /// npm 包元数据内存缓存 TTL（秒），默认 60。
     /// </summary>
     public int NpmMetadataTtlSeconds { get; }
+
+    /// <summary>
+    /// pip 上游索引基址（绝对 URI，去除末尾斜杠，如 <c>https://pypi.org/simple</c>）。
+    /// 用于拼接 <c>{PIP_UPSTREAM_URL}/{规范化项目名}/</c> 与索引根透传；单上游 v1。
+    /// </summary>
+    public string PipUpstream { get; }
+
+    /// <summary>
+    /// pip 上游主机名（含端口，如 <c>pypi.org</c>）。参与 simple 项目页内嵌文件 URL 的
+    /// 定向重写白名单匹配。
+    /// </summary>
+    public string PipUpstreamHost { get; }
+
+    /// <summary>
+    /// pip 伴生文件主机名（含端口）：上游为 pypi.org 时为 <c>files.pythonhosted.org</c>，
+    /// 其余上游为 null（镜像通常与上游同主机）。同样参与文件 URL 重写白名单匹配。
+    /// </summary>
+    public string? PipCompanionHost { get; }
+
+    /// <summary>
+    /// pip 文件下载基址（绝对 URI，去除末尾斜杠）：上游为 pypi.org 时为
+    /// <c>https://files.pythonhosted.org</c>，否则为 <c>{上游 scheme}://{上游 authority}</c>。
+    /// 用于拼接 files 路由的上游 URL <c>{PipFileBaseUrl}/{路径}</c>。
+    /// </summary>
+    public string PipFileBaseUrl { get; }
+
+    /// <summary>
+    /// pip simple 项目页内存缓存 TTL（秒），默认 600；按 Accept 变体（HTML / PEP 691 JSON）分 key。
+    /// </summary>
+    public int PipSimpleTtlSeconds { get; }
 
     /// <summary>
     /// docker 上游有序列表（每项均为绝对 URI，去除末尾斜杠），顺序即失败回退顺序。
@@ -143,6 +190,11 @@ public sealed class ProxyOptions
         string npmUpstream,
         string npmUpstreamHost,
         int npmMetadataTtlSeconds,
+        string pipUpstream,
+        string pipUpstreamHost,
+        string? pipCompanionHost,
+        string pipFileBaseUrl,
+        int pipSimpleTtlSeconds,
         IReadOnlyList<string> dockerUpstreams,
         int dockerTagTtlSeconds,
         int dockerManifestTtlSeconds,
@@ -155,6 +207,11 @@ public sealed class ProxyOptions
         NpmUpstream = npmUpstream;
         NpmUpstreamHost = npmUpstreamHost;
         NpmMetadataTtlSeconds = npmMetadataTtlSeconds;
+        PipUpstream = pipUpstream;
+        PipUpstreamHost = pipUpstreamHost;
+        PipCompanionHost = pipCompanionHost;
+        PipFileBaseUrl = pipFileBaseUrl;
+        PipSimpleTtlSeconds = pipSimpleTtlSeconds;
         DockerUpstreams = dockerUpstreams;
         DockerTagTtlSeconds = dockerTagTtlSeconds;
         DockerManifestTtlSeconds = dockerManifestTtlSeconds;
@@ -165,11 +222,12 @@ public sealed class ProxyOptions
     /// <summary>
     /// 从环境变量集中读取并校验代理配置：优先 <c>NUGET_PROXY_DOMAIN</c>，
     /// 未设置时回退 <c>PROXY_DOMAIN</c>（打弃用警告）；两者皆缺或非法即抛异常（fail-fast）。
-    /// 同时校验 Maven/npm/docker 上游地址并归一化（去除末尾斜杠），读取各仓库内存缓存 TTL 与开关项。
+    /// 同时校验 Maven/npm/docker/pip 上游地址并归一化（去除末尾斜杠），读取各仓库内存缓存 TTL 与开关项；
+    /// pip 上游含 userinfo（<c>user:pass@</c>）时启动即抛异常（避免凭据进日志）。
     /// </summary>
     /// <param name="logger">用于输出弃用警告与缓存根目录信息的日志器。</param>
     /// <returns>校验通过后的代理配置对象。</returns>
-    /// <exception cref="ArgumentException">代理域名或各仓库上游地址缺失/非法时抛出。</exception>
+    /// <exception cref="ArgumentException">代理域名或各仓库上游地址缺失/非法、pip 上游含 userinfo 时抛出。</exception>
     public static ProxyOptions Load(ILogger logger)
     {
         var proxyDomainValue = Environment.GetEnvironmentVariable(NuGetProxyDomainVariable);
@@ -226,6 +284,47 @@ public sealed class ProxyOptions
             npmMetadataTtlSeconds = DefaultNpmMetadataTtlSeconds;
         }
 
+        // pip 单上游：未设置 → 默认 PyPI Simple；设置后校验绝对 URI 与 userinfo（fail-fast）
+        var pipUpstreamEnv = Environment.GetEnvironmentVariable(PipUpstreamUrlVariable);
+        if (string.IsNullOrWhiteSpace(pipUpstreamEnv))
+        {
+            pipUpstreamEnv = DefaultPipUpstreamUrl;
+        }
+
+        if (!Uri.TryCreate(pipUpstreamEnv, UriKind.Absolute, out var pipUpstreamUri))
+        {
+            throw new ArgumentException("Invalid pip upstream URI.");
+        }
+
+        // 拒绝含 userinfo 的上游地址（旧式 Basic 鉴权形态），避免凭据进入日志；私有源鉴权本期不做
+        if (!string.IsNullOrEmpty(pipUpstreamUri.UserInfo))
+        {
+            throw new ArgumentException(
+                $"{PipUpstreamUrlVariable} must not contain userinfo (user:pass@); " +
+                "credentials in the upstream URL are not supported.");
+        }
+
+        // 归一化 pip 上游地址：去除末尾 '/'，保证与 {规范化项目名}/ 拼接时路径正确
+        var pipUpstream = pipUpstreamUri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        // 提取主机名（含端口），用于 simple 项目页内嵌文件绝对 URL 的定向重写白名单
+        var pipUpstreamHost = pipUpstreamUri.Authority;
+
+        // 伴生文件主机：上游为 pypi.org 时映射 files.pythonhosted.org（wheel/sdist 实际所在地），
+        // 其余上游（国内镜像等）文件与页面同主机，无需映射
+        string? pipCompanionHost = null;
+        string pipFileBaseUrl;
+        if (string.Equals(pipUpstreamUri.Host, "pypi.org", StringComparison.OrdinalIgnoreCase))
+        {
+            pipCompanionHost = DefaultPipCompanionHost;
+            pipFileBaseUrl = $"https://{DefaultPipCompanionHost}";
+        }
+        else
+        {
+            pipFileBaseUrl = $"{pipUpstreamUri.Scheme}://{pipUpstreamUri.Authority}";
+        }
+
+        var pipSimpleTtlSeconds = ReadPositiveInt(PipSimpleTtlVariable, DefaultPipSimpleTtlSeconds);
+
         // docker 多上游：拆分/校验/归一化与 Maven 完全一致（同一辅助方法）
         var dockerUpstreamEnv = Environment.GetEnvironmentVariable(DockerUpstreamUrlVariable);
         var dockerUpstreams = ParseUpstreamList(
@@ -238,6 +337,7 @@ public sealed class ProxyOptions
 
         return new ProxyOptions(
             proxyDomain, cachePath, mavenUpstreams, npmUpstream, npmUpstreamHost, npmMetadataTtlSeconds,
+            pipUpstream, pipUpstreamHost, pipCompanionHost, pipFileBaseUrl, pipSimpleTtlSeconds,
             dockerUpstreams, dockerTagTtl, dockerManifestTtl, dockerBlobVerify, dockerEnablePush);
     }
 
