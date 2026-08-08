@@ -311,6 +311,195 @@ public sealed class PipProxyHandlerTests
         Assert.Equal(StatusCodes.Status404NotFound, file.Status);
     }
 
+    /// <summary>files 文件下载：磁盘命中后 HEAD 与 GET 的 Content-Length 一致（均为文件长度）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_FileHead_ContentLengthMatchesGet()
+    {
+        var wheelBytes = Encoding.UTF8.GetBytes("wheel-content");
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(FakeResponses.Bytes(wheelBytes)));
+
+        var get = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("files/packages/a8/57/foo-1.0-py3-none-any.whl", ctx, ct));
+        var head = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("files/packages/a8/57/foo-1.0-py3-none-any.whl", ctx, ct),
+            method: "HEAD");
+
+        Assert.Equal(StatusCodes.Status200OK, get.Status);
+        Assert.Equal(StatusCodes.Status200OK, head.Status);
+        Assert.Equal(get.Headers.ContentLength, head.Headers.ContentLength);
+        Assert.Equal(wheelBytes.Length, get.Headers.ContentLength);
+    }
+
+    /// <summary>simple 索引根：HEAD 与 GET 的 Content-Length 一致（透传不缓存）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_SimpleRootHead_ContentLengthMatchesGet()
+    {
+        const string rootHtml = "<html><body><a href=\"../django/\">django</a></body></html>";
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(Html(rootHtml)));
+
+        var get = await HttpTestHelper.ExecuteAsync((ctx, ct) => harness.Handler.HandlePipRoute("simple/", ctx, ct));
+        var head = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/", ctx, ct), method: "HEAD");
+
+        Assert.Equal(StatusCodes.Status200OK, get.Status);
+        Assert.Equal(StatusCodes.Status200OK, head.Status);
+        Assert.Equal(get.Headers.ContentLength, head.Headers.ContentLength);
+    }
+
+    /// <summary>项目页：query string 原样透传上游（拼接在规范化名之后）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_ProjectPage_QueryStringForwardedToUpstream()
+    {
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(Html(SampleHtml)));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/requests/", ctx, ct),
+            queryString: "?foo=bar&baz=1");
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal("https://pypi.org/simple/requests/?foo=bar&baz=1", harness.Upstream.Requests[0].Url);
+    }
+
+    /// <summary>simple 索引根：query string 原样透传上游。</summary>
+    [Fact]
+    public async Task HandlePipRoute_SimpleRoot_QueryStringForwardedToUpstream()
+    {
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(Html("<html></html>")));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/", ctx, ct),
+            queryString: "?format=json");
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal("https://pypi.org/simple?format=json", harness.Upstream.Requests[0].Url);
+    }
+
+    /// <summary>files 下载：query string 原样透传上游（拼接在文件 URL 之后）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_FileDownload_QueryStringForwardedToUpstream()
+    {
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(FakeResponses.Bytes(new byte[] { 1, 2, 3 })));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("files/packages/a8/57/foo-1.0-py3-none-any.whl", ctx, ct),
+            queryString: "?expires=1700000000");
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(
+            "https://files.pythonhosted.org/packages/a8/57/foo-1.0-py3-none-any.whl?expires=1700000000",
+            harness.Upstream.Requests[0].Url);
+    }
+
+    /// <summary>files 下载：上游网络异常（连接拒绝）→ 502 Bad Gateway（共享磁盘缓存服务语义）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_FileUpstreamNetworkError_Returns502()
+    {
+        using var harness = PipTestHarness.Create(
+            DefaultUpstream,
+            _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("connection refused")));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("files/packages/a8/57/foo-1.0-py3-none-any.whl", ctx, ct));
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+    }
+
+    /// <summary>项目页：上游网络异常（连接拒绝）→ 502 Bad Gateway（与 files 路由语义一致）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_ProjectPageUpstreamNetworkError_Returns502()
+    {
+        using var harness = PipTestHarness.Create(
+            DefaultUpstream,
+            _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("connection refused")));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/requests/", ctx, ct));
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+    }
+
+    /// <summary>simple 索引根：上游网络异常（连接拒绝）→ 502 Bad Gateway（与 files 路由语义一致）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_SimpleRootUpstreamNetworkError_Returns502()
+    {
+        using var harness = PipTestHarness.Create(
+            DefaultUpstream,
+            _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("connection refused")));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/", ctx, ct));
+
+        Assert.Equal(StatusCodes.Status502BadGateway, status);
+    }
+
+    /// <summary>URL 重写：主机大小写不敏感（(?i) 标志），href 中 query 与 #sha256= 片段均保留。</summary>
+    [Fact]
+    public async Task HandlePipRoute_Rewrite_CaseInsensitiveHostKeepsQueryAndFragment()
+    {
+        const string htmlWithQuery = """
+            <a href="HTTPS://Files.Pythonhosted.org/packages/a8/57/foo-1.0-py3-none-any.whl?download=1#sha256=abc123">foo-1.0-py3-none-any.whl</a>
+            """;
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(Html(htmlWithQuery)));
+
+        var (status, _, body) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/foo/", ctx, ct));
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Contains(
+            "https://proxy.example.com/pip/files/packages/a8/57/foo-1.0-py3-none-any.whl?download=1#sha256=abc123",
+            HttpTestHelper.DecodeBody(body));
+    }
+
+    /// <summary>项目页不带尾斜杠（simple/{name}）：上游请求仍拼接规范尾斜杠（客户端兜底形态）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_ProjectPageWithoutTrailingSlash_UpstreamGetsTrailingSlash()
+    {
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(Html(SampleHtml)));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/requests", ctx, ct));
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal("https://pypi.org/simple/requests/", harness.Upstream.Requests[0].Url);
+    }
+
+    /// <summary>PEP 691 JSON 变体：上游 vnd.pypi.simple Content-Type 原样回放（uv/pip 依赖该类型协商）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_ProjectPageJson_VndContentTypeEchoed()
+    {
+        var jsonResponse = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(SampleJson, Encoding.UTF8, "application/vnd.pypi.simple.v1+json"),
+        };
+        using var harness = PipTestHarness.Create(DefaultUpstream, _ => Task.FromResult(jsonResponse));
+
+        var (status, headers, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/requests/", ctx, ct),
+            accept: JsonAccept);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal("application/vnd.pypi.simple.v1+json", headers.ContentType.ToString());
+    }
+
+    /// <summary>simple 索引根：Accept 头原样透传上游（JSON 协商对索引根同样生效）。</summary>
+    [Fact]
+    public async Task HandlePipRoute_SimpleRoot_ForwardsAcceptHeader()
+    {
+        using var harness = PipTestHarness.Create(
+            DefaultUpstream,
+            req => Task.FromResult(
+                (req.Headers.Accept.ToString() ?? string.Empty).Contains("+json")
+                    ? FakeResponses.Json("{\"projects\":[]}")
+                    : Html("<html></html>")));
+
+        var (status, _, _) = await HttpTestHelper.ExecuteAsync(
+            (ctx, ct) => harness.Handler.HandlePipRoute("simple/", ctx, ct),
+            accept: JsonAccept);
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Equal(JsonAccept.Replace(", ", ","), harness.Upstream.Requests[0].GetHeader("Accept"));
+    }
+
     /// <summary>
     /// 构造 HTML 文本响应（Content-Type: text/html）。
     /// </summary>

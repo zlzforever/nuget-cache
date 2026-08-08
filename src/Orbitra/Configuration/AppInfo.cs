@@ -23,12 +23,12 @@ public static class AppInfo
     /// <summary>
     /// 当前已支持的仓库列表（竖线分隔），用于 banner 定位行展示。
     /// </summary>
-    public const string SupportedRepos = "nuget | maven | npm";
+    public const string SupportedRepos = "nuget | maven | npm | docker | pip";
 
     /// <summary>
-    /// 规划支持的仓库列表（竖线分隔），用于 banner 定位行展示。
+    /// 规划支持的仓库列表（竖线分隔），用于 banner 定位行展示；当前已全部落地，为空串。
     /// </summary>
-    public const string PlannedRepos = "docker | pip";
+    public const string PlannedRepos = "";
 
     /// <summary>
     /// 产品版本号（含 git commit 短哈希，如 <c>1.0.0+fa2058b</c>；无 git 上下文时退化为纯 <c>1.0.0</c>）。
@@ -50,6 +50,7 @@ public static class AppInfo
 
     /// <summary>
     /// 组装启动 banner：LOGO + 版本行 + 定位行，供组合根启动时整块打印。
+    /// 规划列表为空时省略 "Next:" 段（当前全部仓库已支持）。
     /// </summary>
     /// <returns>完整 banner 文本（含末尾换行，可直接 Console.WriteLine 输出）。</returns>
     public static string Banner() => string.Join(
@@ -57,7 +58,9 @@ public static class AppInfo
         Logo.TrimEnd('\r', '\n'),
         string.Empty,
         $"  {Name} v{Version}  |  {Tagline}",
-        $"  Repos: {SupportedRepos}                 Next: {PlannedRepos} (规划中)");
+        string.IsNullOrEmpty(PlannedRepos)
+            ? $"  Repos: {SupportedRepos}"
+            : $"  Repos: {SupportedRepos}                 Next: {PlannedRepos} (规划中)");
 
     /// <summary>
     /// 读取当前程序集的 <see cref="AssemblyInformationalVersionAttribute"/> 生成展示版本号：

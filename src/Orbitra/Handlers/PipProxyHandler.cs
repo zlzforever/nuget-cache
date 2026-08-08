@@ -185,7 +185,7 @@ public sealed class PipProxyHandler
     /// <param name="normalizedName">PEP 503 规范化后的项目名。</param>
     /// <param name="httpContext">当前请求上下文（用于透传 Accept / query string / 写 Content-Length）。</param>
     /// <param name="cancellationToken">请求取消令牌。</param>
-    /// <returns>内存命中或上游 2xx 时返回重写后内容；上游非 2xx 透传状态码。</returns>
+    /// <returns>内存命中或上游 2xx 时返回重写后内容；上游非 2xx 透传状态码；上游网络异常/超时返回 502。</returns>
     private async Task<IResult> HandleProjectPage(string normalizedName, HttpContext httpContext, CancellationToken cancellationToken)
     {
         var variant = GetAcceptVariant(httpContext);
@@ -208,29 +208,49 @@ public sealed class PipProxyHandler
             request.Headers.TryAddWithoutValidation("Accept", acceptHeader);
         }
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            _logger.LogWarning("pip simple fetch failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
-            return Results.StatusCode((int)response.StatusCode);
+            response = await httpClient.SendAsync(request, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            // 上游网络异常（连接失败/DNS/拒绝等）：与 files 路由及 maven-metadata 一致返回 502
+            _logger.LogWarning("pip simple upstream failed: {Error} - {Url}", ex.Message, targetUrl);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 客户端未取消但请求超时（HttpClient.Timeout 触发）：视为上游失败返回 502
+            _logger.LogWarning("pip simple upstream failed: timeout - {Url}", targetUrl);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        var contentType = response.Content.Headers.ContentType?.MediaType ?? "text/html; charset=utf-8";
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("pip simple fetch failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
+                return Results.StatusCode((int)response.StatusCode);
+            }
 
-        // URL 重写：白名单主机（配置上游主机 + 伴生文件主机）的绝对 URL 前缀替换为
-        // {domain}/pip/files/，路径/查询/#sha256= 片段保留原样（正则中 / 已被前缀消费，
-        // 替换串需补回）；使用 MatchEvaluator 避免替换串中 $ 等字符被正则解释
-        var rewrittenBody = _rewriteUrlPattern.Replace(
-            body,
-            match => $"{_options.NuGetProxyDomain.AbsoluteUri.TrimEnd('/')}/pip/files/{match.Groups["rest"].Value}");
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "text/html; charset=utf-8";
 
-        var ttl = TimeSpan.FromSeconds(_options.PipSimpleTtlSeconds);
-        _cache.Set(cacheKey, new PipSimpleCacheValue(rewrittenBody, contentType), ttl);
-        _logger.LogInformation("pip simple cached ({Ttl}s): {Name} ({Variant})",
-            _options.PipSimpleTtlSeconds, normalizedName, variant);
+            // URL 重写：白名单主机（配置上游主机 + 伴生文件主机）的绝对 URL 前缀替换为
+            // {domain}/pip/files/，路径/查询/#sha256= 片段保留原样（正则中 / 已被前缀消费，
+            // 替换串需补回）；使用 MatchEvaluator 避免替换串中 $ 等字符被正则解释
+            var rewrittenBody = _rewriteUrlPattern.Replace(
+                body,
+                match => $"{_options.NuGetProxyDomain.AbsoluteUri.TrimEnd('/')}/pip/files/{match.Groups["rest"].Value}");
 
-        return TextContentResult.Build(httpContext, rewrittenBody, contentType);
+            var ttl = TimeSpan.FromSeconds(_options.PipSimpleTtlSeconds);
+            _cache.Set(cacheKey, new PipSimpleCacheValue(rewrittenBody, contentType), ttl);
+            _logger.LogInformation("pip simple cached ({Ttl}s): {Name} ({Variant})",
+                _options.PipSimpleTtlSeconds, normalizedName, variant);
+
+            return TextContentResult.Build(httpContext, rewrittenBody, contentType);
+        }
     }
 
     /// <summary>
@@ -238,7 +258,7 @@ public sealed class PipProxyHandler
     /// </summary>
     /// <param name="httpContext">当前请求上下文（用于透传 Accept / query string / 写 Content-Length）。</param>
     /// <param name="cancellationToken">请求取消令牌。</param>
-    /// <returns>上游 2xx 时返回响应体；上游非 2xx 透传状态码。</returns>
+    /// <returns>上游 2xx 时返回响应体；上游非 2xx 透传状态码；上游网络异常/超时返回 502。</returns>
     private async Task<IResult> HandleSimpleRoot(HttpContext httpContext, CancellationToken cancellationToken)
     {
         var queryString = httpContext.Request.QueryString.Value;
@@ -254,16 +274,36 @@ public sealed class PipProxyHandler
             request.Headers.TryAddWithoutValidation("Accept", acceptHeader);
         }
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            _logger.LogWarning("pip simple root fetch failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
-            return Results.StatusCode((int)response.StatusCode);
+            response = await httpClient.SendAsync(request, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            // 上游网络异常（连接失败/DNS/拒绝等）：与 files 路由及 maven-metadata 一致返回 502
+            _logger.LogWarning("pip simple root upstream failed: {Error} - {Url}", ex.Message, targetUrl);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
+        }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 客户端未取消但请求超时（HttpClient.Timeout 触发）：视为上游失败返回 502
+            _logger.LogWarning("pip simple root upstream failed: timeout - {Url}", targetUrl);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        var contentType = response.Content.Headers.ContentType?.MediaType ?? "text/html; charset=utf-8";
-        return TextContentResult.Build(httpContext, body, contentType);
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("pip simple root fetch failed: {StatusCode} - {Url}", (int)response.StatusCode, targetUrl);
+                return Results.StatusCode((int)response.StatusCode);
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "text/html; charset=utf-8";
+            return TextContentResult.Build(httpContext, body, contentType);
+        }
     }
 
     /// <summary>
